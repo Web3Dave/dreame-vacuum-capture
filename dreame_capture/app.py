@@ -452,6 +452,21 @@ def _ffmpeg_watchdog(did, creds):
             current["ffmpeg_proc"] = new_ffmpeg
 
 
+def _wait_for_path_ready(did, timeout=15):
+    """Callers (HA's go2rtc in particular) connect the instant they see a
+    success response - if the RTSP path isn't actually publishing yet, that
+    shows up as a burst of "no stream is available"/DESCRIBE 404 failures on
+    their end. Block here until MediaMTX confirms real data is flowing,
+    rather than just "we spawned the process".
+    """
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        if _path_inbound_bytes(did) is not None:
+            return True
+        time.sleep(0.5)
+    return False
+
+
 @app.route("/stream/start", methods=["POST"])
 def stream_start():
     body = _require_body("username", "password", "four_digit_code", "did")
@@ -460,6 +475,7 @@ def stream_start():
     with _streams_lock:
         existing = _active_streams.get(did)
         if existing and existing["p2p_proc"].poll() is None:
+            _wait_for_path_ready(did)
             return jsonify({"success": True, "rtsp_url": existing["rtsp_url"], "already_running": True})
 
     p2p_proc, live_url = run_activation(
@@ -479,6 +495,9 @@ def stream_start():
         "country": body.get("country", "eu"), "four_digit_code": body["four_digit_code"],
     }
     threading.Thread(target=_ffmpeg_watchdog, args=(did, creds), daemon=True).start()
+
+    if not _wait_for_path_ready(did):
+        abort(504, "P2P client started but the RTSP path never came up")
 
     return jsonify({"success": True, "rtsp_url": rtsp_url})
 
