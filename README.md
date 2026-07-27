@@ -38,7 +38,9 @@ From there, depending on the endpoint called:
   and tears the whole session down immediately.
 - **`/stream/start`** instead republishes that local feed as RTSP (via a bundled
   [MediaMTX](https://github.com/bluenviron/mediamtx) server) at
-  `rtsp://<host>:8554/<did>`, and keeps it running until `/stream/stop` is called.
+  `rtsp://<host>:8554/<did>`, and keeps it running until `/stream/stop` is called
+  or `stream_timeout_minutes` (default 30, configurable, disable by clearing it)
+  elapses, whichever comes first.
 
 Everything runs inside a single add-on container — no nested Docker, no separate VM.
 
@@ -73,6 +75,9 @@ add-on's configured `api_token`.
 5. On the **Configuration** tab, set `api_token` to any random string (e.g.
    `openssl rand -hex 32`). You'll enter this same value into the companion
    integration's setup flow.
+   `stream_timeout_minutes` defaults to `30` - any stream running longer than
+   that is automatically stopped. Clear the field entirely to disable this and
+   let streams run indefinitely.
 6. Start the add-on and check the **Log** tab for a clean startup.
 7. Install the [companion integration](https://github.com/Web3Dave/dreame-vacuum-capture-integration)
    - that's where your Dreame credentials, region, PIN, and device selection actually
@@ -80,8 +85,8 @@ add-on's configured `api_token`.
 
 ## Files
 
-- `dreame_capture/config.yaml` — add-on manifest (`api_token` option, HTTP + RTSP
-  ports, media mount)
+- `dreame_capture/config.yaml` — add-on manifest (`api_token`/`stream_timeout_minutes`
+  options, HTTP + RTSP ports, media mount)
 - `dreame_capture/Dockerfile` — multi-stage build (Ubuntu 20.04 builder, matching the
   toolchain Tencent's vendored static libraries were built with — a newer GCC will
   fail to link them) plus a bundled MediaMTX RTSP server

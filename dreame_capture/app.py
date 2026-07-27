@@ -62,18 +62,30 @@ _active_streams = {}
 _streams_lock = threading.Lock()
 
 
-def _api_token():
+def _addon_options():
     if not os.path.exists(OPTIONS_PATH):
-        return None
+        return {}
     with open(OPTIONS_PATH) as f:
-        return json.load(f).get("api_token")
+        return json.load(f)
+
+
+def _stream_timeout_minutes():
+    """None means "no timeout" - the stream_timeout_minutes option is
+    optional and left unset by default means don't auto-stop.
+    """
+    value = _addon_options().get("stream_timeout_minutes")
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
 
 
 @app.before_request
 def _require_token():
     if request.path == "/health":
         return None
-    expected = _api_token()
+    expected = _addon_options().get("api_token")
     if not expected:
         abort(500, "api_token is not configured for this add-on - set it in the add-on's Configuration tab")
     if request.headers.get("X-Api-Token") != expected:
@@ -360,6 +372,16 @@ def _ffmpeg_watchdog(did, creds):
                 return  # stream was explicitly stopped
             live_url, rtsp_url = entry["live_url"], entry["rtsp_url"]
             p2p_proc, ffmpeg_proc = entry["p2p_proc"], entry["ffmpeg_proc"]
+            started_at = entry["started_at"]
+
+        timeout_minutes = _stream_timeout_minutes()
+        if timeout_minutes is not None and time.time() - started_at > timeout_minutes * 60:
+            with _streams_lock:
+                _active_streams.pop(did, None)
+            _kill(ffmpeg_proc)
+            _kill(p2p_proc)
+            app.logger.warning("Stream for %s auto-stopped after %s minutes (stream_timeout_minutes)", did, timeout_minutes)
+            return
 
         now = time.time()
         inbound = _path_inbound_bytes(did)
@@ -427,6 +449,7 @@ def stream_start():
     with _streams_lock:
         _active_streams[did] = {
             "p2p_proc": p2p_proc, "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url, "live_url": live_url,
+            "started_at": time.time(),
         }
     creds = {
         "username": body["username"], "password": body["password"],
