@@ -47,8 +47,38 @@ RTSP_HOST_PORT = 8554
 MEDIAMTX_API = "http://127.0.0.1:9997"
 STALL_THRESHOLD_SECONDS = 15
 
+# The device treats KEEP_ALIVE as "an app is currently watching me". It lapses
+# on its own if not refreshed, and when it does the device stops sending
+# non-essential data to the cloud - which includes the camera feed. The real
+# app refreshes it continuously while open; the Dreame HA integration does the
+# same on a 25s timer. Note the camera-service variant (siid 10001/piid 6) is
+# NOT implemented on this vacuum (returns code -1), but this general one is.
+SIID_KEEP_ALIVE = 14
+PIID_KEEP_ALIVE = 4
+KEEP_ALIVE_INTERVAL_SECONDS = 20
+
 SIID_CAMERA_SERVICE = 10001
 AIID_STREAM_CODE = 4
+# The device stops sending video ~60s after activation unless the client keeps
+# telling it someone is watching. Recovered verbatim from the app's own
+# downloadable vacuum plugin bundle (Monitor model):
+#
+#   SIID = 10001
+#   PIID = { TAKE_PHOTO: 5, KEEP_ALIVE: 6, GET_PROPERTY: 99, PERSON_DATA: 110 }
+#   AIID = { CAMERA_OPERATE: 1, VOICE_OPERATE: 2, PROPERTY_OPERATE: 3,
+#            ACCESS_CODE_OPERATE: 4, VIDEO_VENDOR: 7 }
+#
+#   checkAlive(videoStatus) ->
+#     sendAction(AIID.CAMERA_OPERATE, PIID.KEEP_ALIVE,
+#                {operType: 'keep_alive', videoStatus: videoStatus})
+#   ...on setInterval(..., 20000)   // 20s for the Tencent path
+#
+# A healthy reply carries out[0].value == 'ok'. Note it goes through
+# CAMERA_OPERATE (aiid 1), NOT PROPERTY_OPERATE - and reading siid 10001/piid 6
+# as a plain property just returns -1, which is what made it look unsupported.
+AIID_CAMERA_OPERATE = 1
+PIID_KEEP_ALIVE = 6
+KEEP_ALIVE_VIDEO_STATUS = "opened"
 AIID_STREAM_VIDEO = 1
 PIID_STREAM_CODE_OPEN = 1100
 PIID_STREAM_VERIFY_CODE = 1102
@@ -174,14 +204,23 @@ def start_camera_session(protocol, did, four_digit_code, product_id, device_name
                         {"oldcode": oldcode, "lazymode": 0, "session": session})
     _check(r2, "verify PIN")
 
-    r3 = camera_action(protocol, did, AIID_STREAM_VIDEO, PIID_STREAM_VIDEO_TRIGGER, {
+    r3 = trigger_stream_video(protocol, did, product_id, device_name, session)
+    _check(r3, "start video")
+    return session
+
+
+def trigger_stream_video(protocol, did, product_id, device_name, session):
+    """The camera-video-session trigger itself (as opposed to a generic
+    liveness signal). Re-issuing this with the same session is exactly what
+    the watchdog's full-session restart relies on to bring a dead feed back.
+    """
+    return camera_action(protocol, did, AIID_STREAM_VIDEO, PIID_STREAM_VIDEO_TRIGGER, {
         "token": "tx",
         "channelId": f"{product_id}/{device_name}",
         "operType": "monitor",
         "operation": "start",
         "session": session,
     })
-    _check(r3, "start video")
 
 
 def get_identity(protocol, did):
@@ -249,21 +288,45 @@ def start_p2p_client(did, product_id, device_name, p2p_info, timeout=20):
 def run_activation(username, password, country, four_digit_code, did):
     """Shared setup for both /capture and /stream/start: login, resolve identity,
     run the PIN-activation sequence, fetch xp2p_info, start the P2P client.
-    Returns (p2p_proc, live_url).
+    Returns (protocol, p2p_proc, live_url).
+
+    The returned `protocol` owns a live MQTT session (subscribed to the
+    device's /status/ topic) - the real app keeps this open the whole time
+    it's running, which is how it receives continuous position/status
+    updates. Long-lived callers (/stream/start) must hold onto it and call
+    protocol.disconnect() at teardown; if it's simply dropped, Python GCs it
+    and the MQTT session goes away moments after activation.
     """
     protocol = login(username, password, country)
     connect_device(protocol, did)
     product_id, device_name = get_identity(protocol, did)
 
-    start_camera_session(protocol, did, four_digit_code, product_id, device_name)
+    session = start_camera_session(protocol, did, four_digit_code, product_id, device_name)
     time.sleep(1)
     p2p_info = get_p2p_info(protocol, did)
 
     proc, live_url = start_p2p_client(did, product_id, device_name, p2p_info)
     if not live_url:
         proc.terminate()
+        _safe_disconnect(protocol)
         abort(504, "Timed out waiting for the P2P client to report a stream URL")
-    return proc, live_url
+    return {
+        "protocol": protocol,
+        "p2p_proc": proc,
+        "live_url": live_url,
+        "session": session,
+        "product_id": product_id,
+        "device_name": device_name,
+    }
+
+
+def _safe_disconnect(protocol):
+    if protocol is None:
+        return
+    try:
+        protocol.disconnect()
+    except Exception:
+        app.logger.warning("Failed to cleanly disconnect protocol/MQTT session", exc_info=True)
 
 
 @app.route("/devices", methods=["POST"])
@@ -309,6 +372,7 @@ def capture():
     # competing independent session that would fight with that recovery.
     # Only run an independent session when no stream is active at all.
     proc = None
+    protocol = None
     owns_session = False
     with _streams_lock:
         existing = _active_streams.get(did)
@@ -322,10 +386,11 @@ def capture():
                 abort(502, f"Active stream isn't producing frames right now (it should self-recover shortly): {stderr[-300:]}")
         else:
             owns_session = True
-            proc, live_url = run_activation(
+            act = run_activation(
                 body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
             )
-            ok, stderr = _grab_frame(live_url, snapshot_path)
+            protocol, proc = act["protocol"], act["p2p_proc"]
+            ok, stderr = _grab_frame(act["live_url"], snapshot_path)
             if not ok:
                 abort(502, f"ffmpeg failed to capture a frame: {stderr[-500:]}")
 
@@ -338,6 +403,8 @@ def capture():
                 proc.wait(timeout=5)
             except subprocess.TimeoutExpired:
                 proc.kill()
+        if owns_session:
+            _safe_disconnect(protocol)
 
     return jsonify({"success": True, "path": snapshot_path})
 
@@ -369,6 +436,66 @@ def _kill(proc):
             pass
 
 
+def _refresh_keep_alive(protocol, did):
+    """Returns the device's reported value, or None on failure. The app always
+    sends 1; the device answers with its total connected-client count.
+    """
+    resp = protocol.get_properties([{"did": did, "siid": SIID_KEEP_ALIVE, "piid": PIID_KEEP_ALIVE}])
+    value = None
+    if resp and isinstance(resp, list) and resp[0].get("code") == 0:
+        value = resp[0].get("value")
+    if not value:
+        protocol.set_property(SIID_KEEP_ALIVE, PIID_KEEP_ALIVE, 1)
+    return value
+
+
+def _keep_alive_loop(did):
+    """Without this the video path goes dead after ~60-115s while the P2P
+    command channel stays perfectly healthy - the device has simply decided
+    nobody is watching and stopped sending. Re-reads the protocol from the
+    stream entry each pass, since the watchdog can swap it during a full
+    session restart.
+    """
+    while True:
+        with _streams_lock:
+            entry = _active_streams.get(did)
+            if entry is None:
+                return  # stream stopped
+            protocol = entry.get("protocol")
+            session = entry.get("session")
+
+        if protocol is not None:
+            try:
+                _refresh_keep_alive(protocol, did)
+            except Exception:
+                app.logger.warning("KEEP_ALIVE refresh failed for %s", did, exc_info=True)
+
+            # Tell the device someone is still watching, exactly as the app's
+            # own checkAlive() does. Without this it stops sending video after
+            # ~60s while the P2P channel stays perfectly healthy.
+            try:
+                resp = camera_action(
+                    protocol, did, AIID_CAMERA_OPERATE, PIID_KEEP_ALIVE,
+                    {
+                        "operType": "keep_alive",
+                        "videoStatus": KEEP_ALIVE_VIDEO_STATUS,
+                        # sendAction() injects the session into every action
+                        # payload; omitting it gets the call rejected (-1).
+                        "session": session,
+                    },
+                )
+                result = (resp or {}).get("data", {}).get("result", {}) or {}
+                out = result.get("out") or [{}]
+                app.logger.warning(
+                    "camera keep_alive for %s -> code=%s value=%s",
+                    did, result.get("code"), out[0].get("value"),
+                )
+            except Exception:
+                app.logger.warning("camera keep_alive failed for %s", did, exc_info=True)
+
+        time.sleep(KEEP_ALIVE_INTERVAL_SECONDS)
+
+
 def _ffmpeg_watchdog(did, creds):
     """ffmpeg can hang alive (never exits) when the vacuum's XP2P feed stalls
     mid-stream - observed directly: same PID for minutes with zero new data,
@@ -396,6 +523,7 @@ def _ffmpeg_watchdog(did, creds):
             live_url, rtsp_url = entry["live_url"], entry["rtsp_url"]
             p2p_proc, ffmpeg_proc = entry["p2p_proc"], entry["ffmpeg_proc"]
             started_at = entry["started_at"]
+            protocol = entry.get("protocol")
 
         timeout_minutes = _stream_timeout_minutes()
         if timeout_minutes is not None and time.time() - started_at > timeout_minutes * 60:
@@ -403,6 +531,7 @@ def _ffmpeg_watchdog(did, creds):
                 _active_streams.pop(did, None)
             _kill(ffmpeg_proc)
             _kill(p2p_proc)
+            _safe_disconnect(protocol)
             app.logger.warning("Stream for %s auto-stopped after %s minutes (stream_timeout_minutes)", did, timeout_minutes)
             return
 
@@ -422,21 +551,30 @@ def _ffmpeg_watchdog(did, creds):
             _kill(ffmpeg_proc)
             _kill(p2p_proc)
             try:
-                new_p2p_proc, new_live_url = run_activation(
+                act = run_activation(
                     creds["username"], creds["password"], creds["country"], creds["four_digit_code"], did,
                 )
             except Exception:
                 app.logger.warning("Full session restart failed for %s, will retry", did, exc_info=True)
                 continue
-            new_ffmpeg = _spawn_ffmpeg_republish(new_live_url, rtsp_url)
+            # The old MQTT session is superseded - drop it only once the
+            # replacement is established, so there's no window with none.
+            _safe_disconnect(protocol)
+            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
             last_bytes, last_progress, respawns_without_progress = None, time.time(), 0
             with _streams_lock:
                 current = _active_streams.get(did)
                 if current is None:
                     new_ffmpeg.terminate()
-                    new_p2p_proc.terminate()
+                    act["p2p_proc"].terminate()
+                    _safe_disconnect(act["protocol"])
                     return
-                current.update({"p2p_proc": new_p2p_proc, "ffmpeg_proc": new_ffmpeg, "live_url": new_live_url})
+                current.update({
+                    "p2p_proc": act["p2p_proc"], "ffmpeg_proc": new_ffmpeg,
+                    "live_url": act["live_url"], "protocol": act["protocol"],
+                    "session": act["session"], "product_id": act["product_id"],
+                    "device_name": act["device_name"],
+                })
             continue
 
         _kill(ffmpeg_proc)
@@ -448,6 +586,9 @@ def _ffmpeg_watchdog(did, creds):
             current = _active_streams.get(did)
             if current is None or current["p2p_proc"].poll() is not None:
                 new_ffmpeg.terminate()
+                if current is not None:
+                    _active_streams.pop(did, None)
+                    _safe_disconnect(current.get("protocol"))
                 return
             current["ffmpeg_proc"] = new_ffmpeg
 
@@ -478,23 +619,25 @@ def stream_start():
             _wait_for_path_ready(did)
             return jsonify({"success": True, "rtsp_url": existing["rtsp_url"], "already_running": True})
 
-    p2p_proc, live_url = run_activation(
+    act = run_activation(
         body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
     )
 
     rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-    ffmpeg_proc = _spawn_ffmpeg_republish(live_url, rtsp_url)
+    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
 
     with _streams_lock:
         _active_streams[did] = {
-            "p2p_proc": p2p_proc, "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url, "live_url": live_url,
-            "started_at": time.time(),
+            "p2p_proc": act["p2p_proc"], "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url,
+            "live_url": act["live_url"], "started_at": time.time(), "protocol": act["protocol"],
+            "session": act["session"], "product_id": act["product_id"], "device_name": act["device_name"],
         }
     creds = {
         "username": body["username"], "password": body["password"],
         "country": body.get("country", "eu"), "four_digit_code": body["four_digit_code"],
     }
     threading.Thread(target=_ffmpeg_watchdog, args=(did, creds), daemon=True).start()
+    threading.Thread(target=_keep_alive_loop, args=(did,), daemon=True).start()
 
     if not _wait_for_path_ready(did):
         abort(504, "P2P client started but the RTSP path never came up")
@@ -519,6 +662,7 @@ def stream_stop():
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
             proc.kill()
+    _safe_disconnect(entry.get("protocol"))
 
     return jsonify({"success": True, "was_running": True})
 

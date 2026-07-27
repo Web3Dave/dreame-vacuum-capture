@@ -119,15 +119,35 @@ add-on's configured `api_token`.
   integration and are only ever held in memory for the duration of that request
   (an active stream's credentials are kept only as long as it's running, to support
   automatic recovery - see below).
-- **The RTSP feed self-heals, but isn't perfectly stable.** The vacuum's XP2P relay
-  has real, observed packet loss, and its live feed occasionally stalls entirely -
-  confirmed by extended testing against a real device. The add-on watches
-  MediaMTX's own byte-counters for the stream and, if it stops advancing for 15s:
+- **The camera needs a keep-alive or it stops sending video after ~60s.** The
+  device only keeps streaming while a client periodically tells it someone is
+  watching. Miss that and the feed goes abruptly from smooth to frozen at
+  ~60-73s, every time - while the P2P channel itself stays perfectly healthy,
+  which makes it look like a transport problem when it isn't. While a stream is
+  running the add-on sends, every 20s:
+
+  ```
+  siid 10001, aiid 1 (CAMERA_OPERATE), piid 6 (KEEP_ALIVE)
+  value = {"operType":"keep_alive","videoStatus":"opened","session":"<session>"}
+  ```
+
+  A healthy device answers `out[0].value == "ok"`. This was recovered from the
+  app's own `Monitor` model - note it is **not** in the APK, it lives in the
+  React Native plugin bundle the app downloads at runtime (see
+  `camera-project/apk/plugins/` for the extracted bundles and notes). Two
+  details matter: it must go through `CAMERA_OPERATE` (aiid 1), not
+  `PROPERTY_OPERATE`, and the `session` must be included - the app's
+  `sendAction()` injects it into every action payload, and without it the
+  device rejects the call with `code -1`. Reading siid 10001/piid 6 as a plain
+  property also just returns `-1`, which makes it look unsupported.
+
+- **The RTSP feed also self-heals.** Independently of the above, the XP2P relay
+  has real, observed packet loss and can stall. The add-on watches MediaMTX's
+  own byte-counters and, if they stop advancing for 15s:
   1. First tries respawning just the `ffmpeg` republish process (cheap, ~instant).
   2. If that doesn't restore data flow either, tears down and re-runs the full
-     login/activation sequence (a fresh XP2P session) - this takes roughly
-     20-30 seconds end to end.
-  Either way, `/stream/start`'s original credentials are what make step 2 possible,
-  which is why they're retained in memory while a stream is active. Expect the
-  occasional ~30s reconnect gap on a live view rather than a permanently frozen
-  feed - if you see it hang far longer than that, check the add-on log.
+     login/activation sequence (a fresh XP2P session) - roughly 20-30 seconds.
+
+  `/stream/start`'s original credentials are what make step 2 possible, which is
+  why they're retained in memory while a stream is active. With the keep-alive
+  working this should now be a rare fallback rather than a once-a-minute event.
