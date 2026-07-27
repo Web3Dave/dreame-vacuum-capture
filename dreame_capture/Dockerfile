@@ -1,0 +1,53 @@
+# Builder stage matches the toolchain (Ubuntu 20.04 / GCC) Tencent's vendored
+# XP2P static libraries were built with - a newer GCC's LTO bytecode won't link.
+FROM ubuntu:20.04 AS builder
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      build-essential cmake \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /build
+COPY pc_client/CMakeLists.txt .
+COPY pc_client/src/ src/
+COPY pc_client/lib/ lib/
+RUN cmake -S . -B build && cmake --build build --config Release
+
+FROM ubuntu:20.04
+
+ARG BUILD_ARCH
+ARG BUILD_DATE
+ARG BUILD_DESCRIPTION
+ARG BUILD_NAME
+ARG BUILD_REF
+ARG BUILD_REPOSITORY
+ARG BUILD_VERSION
+
+LABEL \
+    io.hass.name="${BUILD_NAME}" \
+    io.hass.description="${BUILD_DESCRIPTION}" \
+    io.hass.arch="${BUILD_ARCH}" \
+    io.hass.type="addon" \
+    io.hass.version=${BUILD_VERSION} \
+    maintainer="Web3Dave@users.noreply.github.com" \
+    org.opencontainers.image.title="${BUILD_NAME}" \
+    org.opencontainers.image.description="${BUILD_DESCRIPTION}" \
+    org.opencontainers.image.source="https://github.com/${BUILD_REPOSITORY}" \
+    org.opencontainers.image.created=${BUILD_DATE} \
+    org.opencontainers.image.revision=${BUILD_REF} \
+    org.opencontainers.image.version=${BUILD_VERSION}
+
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      python3 python3-pip libstdc++6 ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /app
+COPY requirements.txt .
+RUN pip3 install --no-cache-dir -r requirements.txt
+
+COPY --from=builder /build/build/p2p_sample ./p2p_sample
+COPY dreame_lib/ dreame_lib/
+COPY dreame_sign.py .
+COPY app.py .
+
+EXPOSE 8099
+CMD ["python3", "app.py"]
