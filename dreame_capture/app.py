@@ -2,14 +2,25 @@
 """
 Dreame Vacuum Camera Capture - Home Assistant add-on HTTP API.
 
-POST /capture  -> logs in, runs the camera activation sequence, fetches a
-                  fresh xp2p_info credential, starts the local P2P client,
-                  grabs one JPEG frame into /media/dreame-capture/, returns
-                  its path.
-GET  /latest.jpg -> serves the most recent snapshot.
-GET  /health      -> liveness check.
+Stateless w.r.t. Dreame account identity: every request supplies its own
+credentials/did. The only thing this add-on itself is configured with is
+`api_token`, a shared secret required on every request (see README.md) -
+this is meant to be called by a companion Home Assistant integration, not
+used directly by end users.
 
-See README.md for the HA-side rest_command / generic camera wiring.
+POST /devices       {username, password, country}
+                    -> discovers every device on the account
+POST /capture       {username, password, country, four_digit_code, did}
+                    -> one-shot: activation sequence -> grab one JPEG frame
+                       -> save to /media/dreame-capture/<did>/ -> tear down
+POST /stream/start  {username, password, country, four_digit_code, did}
+                    -> activation sequence -> keeps the P2P session alive,
+                       republishing it as RTSP via a bundled MediaMTX server
+POST /stream/stop   {did}
+                    -> tears down a stream started above
+GET  /stream/status?did=...
+GET  /latest.jpg?did=...
+GET  /health        (no auth - liveness only)
 """
 import hashlib
 import json
@@ -21,17 +32,17 @@ import threading
 import time
 import uuid
 
-from flask import Flask, jsonify, send_file, abort
+from flask import Flask, jsonify, send_file, abort, request
 
 sys.path.insert(0, os.path.dirname(__file__))
 from dreame_lib.protocol import DreameVacuumProtocol
 from dreame_sign import sign_params
 
 OPTIONS_PATH = "/data/options.json"
-MEDIA_DIR = "/media/dreame-capture"
+MEDIA_ROOT = "/media/dreame-capture"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
-P2P_CONFIG = "/tmp/p2p_config.txt"
+RTSP_HOST_PORT = 8554
 
 SIID_CAMERA_SERVICE = 10001
 AIID_STREAM_CODE = 4
@@ -41,40 +52,67 @@ PIID_STREAM_VERIFY_CODE = 1102
 PIID_STREAM_VIDEO_TRIGGER = 1
 
 app = Flask(__name__)
-os.makedirs(MEDIA_DIR, exist_ok=True)
+os.makedirs(MEDIA_ROOT, exist_ok=True)
+
+# did -> {"p2p_proc": Popen, "ffmpeg_proc": Popen, "live_url": str}
+_active_streams = {}
+_streams_lock = threading.Lock()
 
 
-def load_options():
+def _api_token():
     if not os.path.exists(OPTIONS_PATH):
-        abort(500, "options.json not found - is this running as a Home Assistant add-on?")
+        return None
     with open(OPTIONS_PATH) as f:
-        opts = json.load(f)
-    required = ["account_username", "account_password", "four_digit_code"]
-    missing = [k for k in required if not opts.get(k)]
+        return json.load(f).get("api_token")
+
+
+@app.before_request
+def _require_token():
+    if request.path == "/health":
+        return None
+    expected = _api_token()
+    if not expected:
+        abort(500, "api_token is not configured for this add-on - set it in the add-on's Configuration tab")
+    if request.headers.get("X-Api-Token") != expected:
+        abort(401, "Missing or incorrect X-Api-Token header")
+
+
+def _media_dir(did):
+    path = os.path.join(MEDIA_ROOT, did)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _require_body(*keys):
+    body = request.get_json(silent=True) or {}
+    missing = [k for k in keys if not body.get(k)]
     if missing:
-        abort(400, f"Missing add-on configuration: {missing}")
-    return opts
+        abort(400, f"Missing required field(s): {missing}")
+    return body
 
 
-def login(opts):
+def login(username, password, country):
     protocol = DreameVacuumProtocol(
-        username=opts["account_username"],
-        password=opts["account_password"],
-        country=opts.get("account_country", "eu"),
-        prefer_cloud=True,
-        account_type="dreame",
+        username=username, password=password, country=country or "eu",
+        prefer_cloud=True, account_type="dreame",
     )
     if not protocol.cloud.login():
-        abort(502, "Dreame login failed - check account_username/account_password/account_country")
+        abort(502, "Dreame login failed - check username/password/country")
+    return protocol
 
+
+def list_devices(protocol):
     devices = protocol.cloud.get_devices()
-    records = devices.get("page", {}).get("records", [])
-    if not records:
-        abort(502, "No devices found on this Dreame account")
-    did = str(records[0]["did"])
+    records = (devices or {}).get("page", {}).get("records", [])
+    return [
+        {"did": str(d["did"]), "mac": d.get("mac"), "name": d.get("customName") or d.get("model")}
+        for d in records
+    ]
+
+
+def connect_device(protocol, did):
     protocol.cloud._did = did
     protocol.connect()
-    return protocol, did
 
 
 def signed_call(protocol, path, body):
@@ -149,21 +187,24 @@ def get_p2p_info(protocol, did):
     return resp["data"]["data"]["p2pInfo"]
 
 
-def write_p2p_config(product_id, device_name):
-    with open(P2P_CONFIG, "w") as f:
+def write_p2p_config(did, product_id, device_name):
+    config_path = f"/tmp/p2p_config_{did}.txt"
+    with open(config_path, "w") as f:
         f.write(f"product_id={product_id}\n")
         f.write(f"device_name={device_name}\n")
         f.write("app_id=\n")
         f.write("app_key=\n")
         f.write("lan_host=\n")
         f.write("lan_port=\n")
+    return config_path
 
 
-def run_p2p_and_get_live_url(p2p_info, timeout=20):
+def start_p2p_client(did, product_id, device_name, p2p_info, timeout=20):
+    config_path = write_p2p_config(did, product_id, device_name)
     env = dict(os.environ)
     env["XP2P_INFO"] = p2p_info
     proc = subprocess.Popen(
-        [P2P_BINARY, P2P_CONFIG], env=env,
+        [P2P_BINARY, config_path], env=env,
         stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
 
@@ -190,26 +231,45 @@ def run_p2p_and_get_live_url(p2p_info, timeout=20):
     return proc, live_url
 
 
-@app.route("/capture", methods=["POST"])
-def capture():
-    opts = load_options()
-    protocol, did = login(opts)
+def run_activation(username, password, country, four_digit_code, did):
+    """Shared setup for both /capture and /stream/start: login, resolve identity,
+    run the PIN-activation sequence, fetch xp2p_info, start the P2P client.
+    Returns (p2p_proc, live_url).
+    """
+    protocol = login(username, password, country)
+    connect_device(protocol, did)
     product_id, device_name = get_identity(protocol, did)
 
-    start_camera_session(protocol, did, opts["four_digit_code"], product_id, device_name)
+    start_camera_session(protocol, did, four_digit_code, product_id, device_name)
     time.sleep(1)
     p2p_info = get_p2p_info(protocol, did)
 
-    write_p2p_config(product_id, device_name)
-    proc, live_url = run_p2p_and_get_live_url(p2p_info)
-
+    proc, live_url = start_p2p_client(did, product_id, device_name, p2p_info)
     if not live_url:
         proc.terminate()
         abort(504, "Timed out waiting for the P2P client to report a stream URL")
+    return proc, live_url
 
+
+@app.route("/devices", methods=["POST"])
+def devices():
+    body = _require_body("username", "password")
+    protocol = login(body["username"], body["password"], body.get("country", "eu"))
+    return jsonify({"success": True, "devices": list_devices(protocol)})
+
+
+@app.route("/capture", methods=["POST"])
+def capture():
+    body = _require_body("username", "password", "four_digit_code", "did")
+    did = body["did"]
+    proc, live_url = run_activation(
+        body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
+    )
+
+    media_dir = _media_dir(did)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    snapshot_path = os.path.join(MEDIA_DIR, f"snapshot_{timestamp}.jpg")
-    latest_path = os.path.join(MEDIA_DIR, "latest.jpg")
+    snapshot_path = os.path.join(media_dir, f"snapshot_{timestamp}.jpg")
+    latest_path = os.path.join(media_dir, "latest.jpg")
 
     try:
         result = subprocess.run(
@@ -230,11 +290,72 @@ def capture():
     return jsonify({"success": True, "path": snapshot_path})
 
 
+@app.route("/stream/start", methods=["POST"])
+def stream_start():
+    body = _require_body("username", "password", "four_digit_code", "did")
+    did = body["did"]
+
+    with _streams_lock:
+        existing = _active_streams.get(did)
+        if existing and existing["ffmpeg_proc"].poll() is None:
+            return jsonify({"success": True, "rtsp_url": existing["rtsp_url"], "already_running": True})
+
+    p2p_proc, live_url = run_activation(
+        body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
+    )
+
+    rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
+    ffmpeg_proc = subprocess.Popen(
+        ["ffmpeg", "-y", "-i", live_url, "-c", "copy", "-f", "rtsp", rtsp_url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+    with _streams_lock:
+        _active_streams[did] = {"p2p_proc": p2p_proc, "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url}
+
+    return jsonify({"success": True, "rtsp_url": rtsp_url})
+
+
+@app.route("/stream/stop", methods=["POST"])
+def stream_stop():
+    body = _require_body("did")
+    did = body["did"]
+
+    with _streams_lock:
+        entry = _active_streams.pop(did, None)
+
+    if not entry:
+        return jsonify({"success": True, "was_running": False})
+
+    for proc in (entry["ffmpeg_proc"], entry["p2p_proc"]):
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    return jsonify({"success": True, "was_running": True})
+
+
+@app.route("/stream/status", methods=["GET"])
+def stream_status():
+    did = request.args.get("did")
+    if not did:
+        abort(400, "Missing required query param: did")
+    with _streams_lock:
+        entry = _active_streams.get(did)
+        running = bool(entry and entry["ffmpeg_proc"].poll() is None)
+    return jsonify({"running": running})
+
+
 @app.route("/latest.jpg", methods=["GET"])
 def latest():
-    path = os.path.join(MEDIA_DIR, "latest.jpg")
+    did = request.args.get("did")
+    if not did:
+        abort(400, "Missing required query param: did")
+    path = os.path.join(_media_dir(did), "latest.jpg")
     if not os.path.exists(path):
-        abort(404, "No snapshot has been captured yet")
+        abort(404, "No snapshot has been captured yet for this device")
     return send_file(path, mimetype="image/jpeg")
 
 
@@ -244,4 +365,4 @@ def health():
 
 
 if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=8099)
+    app.run(host="0.0.0.0", port=8099, threaded=True)

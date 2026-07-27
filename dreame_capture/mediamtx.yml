@@ -1,0 +1,12 @@
+rtsp: yes
+rtspAddress: :8554
+rtmp: no
+hls: no
+webrtc: no
+srt: no
+
+# Any path name (we use the vacuum's did) can be published/read without
+# being pre-declared - ffmpeg publishes to rtsp://127.0.0.1:8554/<did>,
+# RTSP clients (including HA's stream component) read the same path.
+paths:
+  all_others:

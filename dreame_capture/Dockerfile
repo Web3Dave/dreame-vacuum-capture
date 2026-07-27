@@ -37,8 +37,17 @@ LABEL \
 
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-      python3 python3-pip libstdc++6 ffmpeg ca-certificates \
+      python3 python3-pip libstdc++6 ffmpeg ca-certificates curl \
     && rm -rf /var/lib/apt/lists/*
+
+# MediaMTX: bundled RTSP server. ffmpeg republishes each device's local FLV
+# feed into it (rtsp://127.0.0.1:8554/<did>), and it serves that out to any
+# RTSP client (HA's stream component included) on the same path/port.
+ARG MEDIAMTX_VERSION=v1.19.3
+RUN curl -sL "https://github.com/bluenviron/mediamtx/releases/download/${MEDIAMTX_VERSION}/mediamtx_${MEDIAMTX_VERSION}_linux_amd64.tar.gz" \
+      -o /tmp/mediamtx.tar.gz \
+    && tar -xzf /tmp/mediamtx.tar.gz -C /usr/local/bin mediamtx \
+    && rm /tmp/mediamtx.tar.gz
 
 WORKDIR /app
 COPY requirements.txt .
@@ -48,6 +57,9 @@ COPY --from=builder /build/build/p2p_sample ./p2p_sample
 COPY dreame_lib/ dreame_lib/
 COPY dreame_sign.py .
 COPY app.py .
+COPY run.sh .
+COPY mediamtx.yml .
+RUN chmod +x run.sh
 
-EXPOSE 8099
-CMD ["python3", "app.py"]
+EXPOSE 8099 8554
+CMD ["./run.sh"]

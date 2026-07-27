@@ -1,10 +1,10 @@
 name: Dreame Vacuum Camera Capture
 description: >-
-  Captures a snapshot from your Dreame vacuum's onboard camera via Tencent's
-  XP2P protocol, authenticated with your own Dreame account credentials.
-  Exposes a local HTTP endpoint you can wire into HA's rest_command and
-  generic camera integrations.
-version: "1.1.0"
+  Backend engine for the Dreame Vacuum Camera Capture integration. Talks to
+  Dreame's cloud API and Tencent's XP2P SDK to pull snapshots and RTSP
+  streams from your vacuum's onboard camera. Not meant to be used directly -
+  install the companion custom integration, which drives this add-on's API.
+version: "2.0.0"
 slug: dreame_capture
 url: https://github.com/Web3Dave/dreame-vacuum-video-capture
 init: false
@@ -15,20 +15,16 @@ boot: auto
 
 ports:
   8099/tcp: 8099
+  8554/tcp: 8554
 ports_description:
-  8099/tcp: HTTP API (trigger capture / fetch latest snapshot)
+  8099/tcp: HTTP API (called by the Dreame Vacuum Camera Capture integration)
+  8554/tcp: RTSP (one path per device, e.g. rtsp://<host>:8554/<did>)
 
 options:
-  account_username: ""
-  account_password: ""
-  account_country: "eu"
-  four_digit_code: ""
+  api_token: ""
 
 schema:
-  account_username: str
-  account_password: password
-  account_country: list(cn|eu|us|ru|sg|de|other)
-  four_digit_code: str
+  api_token: str
 
 map:
   - media:rw
