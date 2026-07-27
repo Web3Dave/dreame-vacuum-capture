@@ -5,6 +5,19 @@ hls: no
 webrtc: no
 srt: no
 
+# The vacuum's XP2P relay feed has real, observed packet loss/jitter - a
+# momentary stall can exceed MediaMTX's 10s default read/write timeout and
+# get the session torn down even though the underlying P2P client is fine.
+# Give it more room to ride out those stalls.
+readTimeout: 60s
+writeTimeout: 60s
+
+# Used by the add-on to detect a stalled publish (ffmpeg can hang without
+# exiting when the underlying feed stalls, so process-liveness alone isn't
+# enough - we poll this to check the path is actually "ready").
+api: yes
+apiAddress: :9997
+
 # Any path name (we use the vacuum's did) can be published/read without
 # being pre-declared - ffmpeg publishes to rtsp://127.0.0.1:8554/<did>,
 # RTSP clients (including HA's stream component) read the same path.

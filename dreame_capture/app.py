@@ -32,6 +32,7 @@ import threading
 import time
 import uuid
 
+import requests
 from flask import Flask, jsonify, send_file, abort, request
 
 sys.path.insert(0, os.path.dirname(__file__))
@@ -43,6 +44,8 @@ MEDIA_ROOT = "/media/dreame-capture"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
 RTSP_HOST_PORT = 8554
+MEDIAMTX_API = "http://127.0.0.1:9997"
+STALL_THRESHOLD_SECONDS = 15
 
 SIID_CAMERA_SERVICE = 10001
 AIID_STREAM_CODE = 4
@@ -262,9 +265,22 @@ def devices():
 def capture():
     body = _require_body("username", "password", "four_digit_code", "did")
     did = body["did"]
-    proc, live_url = run_activation(
-        body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
-    )
+
+    # The vacuum's camera only supports one live encoder session at a time -
+    # starting a second one (via a fresh run_activation) would kill whatever
+    # session /stream/start already has running. If a stream is active, grab
+    # a frame from its existing feed instead of starting a competing one.
+    with _streams_lock:
+        existing = _active_streams.get(did)
+        reuse_live_url = existing["live_url"] if existing and existing["p2p_proc"].poll() is None else None
+
+    owns_session = reuse_live_url is None
+    if owns_session:
+        proc, live_url = run_activation(
+            body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
+        )
+    else:
+        live_url = reuse_live_url
 
     media_dir = _media_dir(did)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
@@ -281,13 +297,114 @@ def capture():
         with open(snapshot_path, "rb") as src, open(latest_path, "wb") as dst:
             dst.write(src.read())
     finally:
-        proc.terminate()
+        if owns_session:
+            proc.terminate()
+            try:
+                proc.wait(timeout=5)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+
+    return jsonify({"success": True, "path": snapshot_path})
+
+
+def _spawn_ffmpeg_republish(live_url, rtsp_url):
+    return subprocess.Popen(
+        ["ffmpeg", "-y", "-i", live_url, "-c", "copy", "-f", "rtsp", rtsp_url],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+def _path_inbound_bytes(did):
+    """None means "no active publisher on this path" (dead), not "unknown"."""
+    try:
+        resp = requests.get(f"{MEDIAMTX_API}/v3/paths/get/{did}", timeout=3)
+        if resp.status_code != 200:
+            return None
+        return resp.json().get("inboundBytes")
+    except requests.RequestException:
+        return None
+
+
+def _kill(proc):
+    if proc.poll() is None:
+        proc.kill()
         try:
             proc.wait(timeout=5)
         except subprocess.TimeoutExpired:
-            proc.kill()
+            pass
 
-    return jsonify({"success": True, "path": snapshot_path})
+
+def _ffmpeg_watchdog(did, creds):
+    """ffmpeg can hang alive (never exits) when the vacuum's XP2P feed stalls
+    mid-stream - observed directly: same PID for minutes with zero new data,
+    long after MediaMTX had already torn down the RTSP session as dead. Process
+    liveness alone can't detect this, so instead we track MediaMTX's own
+    inboundBytes counter for the path and force-kill+respawn ffmpeg if it stops
+    advancing for STALL_THRESHOLD_SECONDS.
+
+    Also observed: sometimes respawning ffmpeg alone doesn't help, because
+    p2p_proc's own XP2P session has silently gone stale (still alive, but no
+    longer relaying data) - not just the ffmpeg leg. If one ffmpeg-only
+    respawn in a row still doesn't produce progress, escalate to a full
+    session restart (fresh run_activation, new p2p_proc and live_url).
+    """
+    last_bytes = None
+    last_progress = time.time()
+    respawns_without_progress = 0
+
+    while True:
+        time.sleep(3)
+        with _streams_lock:
+            entry = _active_streams.get(did)
+            if entry is None:
+                return  # stream was explicitly stopped
+            live_url, rtsp_url = entry["live_url"], entry["rtsp_url"]
+            p2p_proc, ffmpeg_proc = entry["p2p_proc"], entry["ffmpeg_proc"]
+
+        now = time.time()
+        inbound = _path_inbound_bytes(did)
+        if inbound is not None and inbound != last_bytes:
+            last_bytes, last_progress = inbound, now
+            respawns_without_progress = 0
+            continue
+
+        exited = ffmpeg_proc.poll() is not None
+        stalled = now - last_progress > STALL_THRESHOLD_SECONDS
+        if not (exited or stalled):
+            continue
+
+        if respawns_without_progress >= 1:
+            _kill(ffmpeg_proc)
+            _kill(p2p_proc)
+            try:
+                new_p2p_proc, new_live_url = run_activation(
+                    creds["username"], creds["password"], creds["country"], creds["four_digit_code"], did,
+                )
+            except Exception:
+                app.logger.warning("Full session restart failed for %s, will retry", did, exc_info=True)
+                continue
+            new_ffmpeg = _spawn_ffmpeg_republish(new_live_url, rtsp_url)
+            last_bytes, last_progress, respawns_without_progress = None, time.time(), 0
+            with _streams_lock:
+                current = _active_streams.get(did)
+                if current is None:
+                    new_ffmpeg.terminate()
+                    new_p2p_proc.terminate()
+                    return
+                current.update({"p2p_proc": new_p2p_proc, "ffmpeg_proc": new_ffmpeg, "live_url": new_live_url})
+            continue
+
+        _kill(ffmpeg_proc)
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url)
+        last_bytes, last_progress = None, time.time()
+        respawns_without_progress += 1
+
+        with _streams_lock:
+            current = _active_streams.get(did)
+            if current is None or current["p2p_proc"].poll() is not None:
+                new_ffmpeg.terminate()
+                return
+            current["ffmpeg_proc"] = new_ffmpeg
 
 
 @app.route("/stream/start", methods=["POST"])
@@ -297,7 +414,7 @@ def stream_start():
 
     with _streams_lock:
         existing = _active_streams.get(did)
-        if existing and existing["ffmpeg_proc"].poll() is None:
+        if existing and existing["p2p_proc"].poll() is None:
             return jsonify({"success": True, "rtsp_url": existing["rtsp_url"], "already_running": True})
 
     p2p_proc, live_url = run_activation(
@@ -305,13 +422,17 @@ def stream_start():
     )
 
     rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-    ffmpeg_proc = subprocess.Popen(
-        ["ffmpeg", "-y", "-i", live_url, "-c", "copy", "-f", "rtsp", rtsp_url],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
+    ffmpeg_proc = _spawn_ffmpeg_republish(live_url, rtsp_url)
 
     with _streams_lock:
-        _active_streams[did] = {"p2p_proc": p2p_proc, "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url}
+        _active_streams[did] = {
+            "p2p_proc": p2p_proc, "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url, "live_url": live_url,
+        }
+    creds = {
+        "username": body["username"], "password": body["password"],
+        "country": body.get("country", "eu"), "four_digit_code": body["four_digit_code"],
+    }
+    threading.Thread(target=_ffmpeg_watchdog, args=(did, creds), daemon=True).start()
 
     return jsonify({"success": True, "rtsp_url": rtsp_url})
 
@@ -344,7 +465,7 @@ def stream_status():
         abort(400, "Missing required query param: did")
     with _streams_lock:
         entry = _active_streams.get(did)
-        running = bool(entry and entry["ffmpeg_proc"].poll() is None)
+        running = bool(entry and entry["p2p_proc"].poll() is None)
     return jsonify({"running": running})
 
 
