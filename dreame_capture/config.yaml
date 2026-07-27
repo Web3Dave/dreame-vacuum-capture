@@ -4,7 +4,7 @@ description: >-
   XP2P protocol, authenticated with your own Dreame account credentials.
   Exposes a local HTTP endpoint you can wire into HA's rest_command and
   generic camera integrations.
-version: "1.0.0"
+version: "1.1.0"
 slug: dreame_capture
 url: https://github.com/Web3Dave/dreame-vacuum-video-capture
 init: false
@@ -23,16 +23,12 @@ options:
   account_password: ""
   account_country: "eu"
   four_digit_code: ""
-  product_id: ""
-  device_name: ""
 
 schema:
   account_username: str
   account_password: password
   account_country: list(cn|eu|us|ru|sg|de|other)
   four_digit_code: str
-  product_id: str
-  device_name: str
 
 map:
   - media:rw

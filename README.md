@@ -16,13 +16,16 @@ notice.
 
 ## How it works
 
-1. Logs into your Dreame account
-2. Runs the camera-activation sequence the app performs when you enter the camera's
+1. Logs into your Dreame account and lists the devices on it
+2. Resolves the vacuum's Tencent XP2P `product_id`/`device_name` automatically via
+   Dreame's own `getIdentity` endpoint - the same call the app makes, so you never
+   need to look these up yourself
+3. Runs the camera-activation sequence the app performs when you enter the camera's
    4-digit PIN (open a stream session → verify the PIN → start the video encoder)
-3. Fetches a fresh `xp2p_info` P2P session credential from Dreame's backend
-4. Runs Tencent's actual XP2P SDK binary (the real, official build — not a
+4. Fetches a fresh `xp2p_info` P2P session credential from Dreame's backend
+5. Runs Tencent's actual XP2P SDK binary (the real, official build — not a
    reimplementation) to negotiate the P2P/relay connection and expose a local FLV feed
-5. Grabs one frame via `ffmpeg` and saves it to `/media/dreame-capture/`
+6. Grabs one frame via `ffmpeg` and saves it to `/media/dreame-capture/`
 
 Everything runs inside a single add-on container — no nested Docker, no separate VM.
 
@@ -52,19 +55,17 @@ Click **Dreame Vacuum Camera Capture → Install**, then go to the **Configurati
 | `account_password` | Your Dreame account password |
 | `account_country` | The region your account is registered in (check Settings → Region in the app — most EU accounts use `eu`) |
 | `four_digit_code` | The camera privacy PIN you set in the app for this vacuum |
-| `product_id` | See below |
-| `device_name` | See below |
 
 Click **Save**, then switch to the **Info** tab and click **Start**. Check the **Log**
 tab to confirm it started cleanly.
 
-#### Finding `product_id` and `device_name`
+That's it - no `product_id`/`device_name`/`did` to look up. The add-on logs in, takes
+the first device on your account, and calls Dreame's own
+`dreame-third-video/tx/mgr/dev/getIdentity` endpoint (the same call the app itself
+makes) to resolve those identifiers automatically on every capture.
 
-These identify your specific vacuum model/unit and aren't exposed anywhere in the
-app's UI. The easiest way to find them once: capture your phone's HTTPS traffic with
-mitmproxy while opening the vacuum's live camera view, and look at any POST to
-`applog.iotcloud.tencentiotcloud.com/api/xp2p_ops/applog` — the JSON body includes
-both `"ProductId"` and `"DeviceName"` fields directly.
+> If your account has more than one Dreame device, the add-on currently always uses
+> the first one returned by the account's device list - there's no picker yet.
 
 ### 3. Wire up a service and a camera entity
 
@@ -120,7 +121,7 @@ timestamped history, not just the latest frame.
   upstream, so this won't run on Raspberry Pi / HA Green / HA Yellow.
 - If a capture times out waiting for a stream URL, check the add-on log — the
   activation sequence returns a `code` for each step, and a non-zero code usually
-  means a wrong PIN, wrong `product_id`/`device_name`, or an expired session.
+  means a wrong PIN or an expired session.
 - The `xp2p_info` credential appears to be a longer-lived, cached value rather than
   single-use, but the add-on re-runs the full activation sequence on every capture
   for reliability, since the video encoder needs to be actively started each time.

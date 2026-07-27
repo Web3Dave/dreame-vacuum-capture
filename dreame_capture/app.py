@@ -49,7 +49,7 @@ def load_options():
         abort(500, "options.json not found - is this running as a Home Assistant add-on?")
     with open(OPTIONS_PATH) as f:
         opts = json.load(f)
-    required = ["account_username", "account_password", "four_digit_code", "product_id", "device_name"]
+    required = ["account_username", "account_password", "four_digit_code"]
     missing = [k for k in required if not opts.get(k)]
     if missing:
         abort(400, f"Missing add-on configuration: {missing}")
@@ -131,6 +131,17 @@ def start_camera_session(protocol, did, four_digit_code, product_id, device_name
     _check(r3, "start video")
 
 
+def get_identity(protocol, did):
+    """Auto-discover this device's Tencent XP2P product_id/device_name - the app
+    fetches these the same way rather than a user ever typing them in.
+    """
+    resp = signed_call(protocol, "dreame-third-video/tx/mgr/dev/getIdentity", {"did": did, "os": "ios"})
+    if not resp or not resp.get("success"):
+        abort(502, f"getIdentity failed: {resp}")
+    data = resp["data"]["data"]
+    return data["productId"], data["deviceName"]
+
+
 def get_p2p_info(protocol, did):
     resp = signed_call(protocol, "dreame-third-video/tx/dev/getP2PInfo", {"did": did})
     if not resp or not resp.get("success"):
@@ -183,12 +194,13 @@ def run_p2p_and_get_live_url(p2p_info, timeout=20):
 def capture():
     opts = load_options()
     protocol, did = login(opts)
+    product_id, device_name = get_identity(protocol, did)
 
-    start_camera_session(protocol, did, opts["four_digit_code"], opts["product_id"], opts["device_name"])
+    start_camera_session(protocol, did, opts["four_digit_code"], product_id, device_name)
     time.sleep(1)
     p2p_info = get_p2p_info(protocol, did)
 
-    write_p2p_config(opts["product_id"], opts["device_name"])
+    write_p2p_config(product_id, device_name)
     proc, live_url = run_p2p_and_get_live_url(p2p_info)
 
     if not live_url:
