@@ -271,7 +271,7 @@ int main(int argc, char** argv)
      * process (e.g. Python reading our stdout) can parse it, then just
      * stay alive so the local FLV proxy this handle owns keeps running.
      * `docker stop`/SIGTERM ends the process. */
-    char *url = QcloudRequestLiveUrl(handle, STREAM_TYPE_STANDARD, 0, false);
+    char *url = QcloudRequestLiveUrl(handle, STREAM_TYPE_HIGH, 0, false);
     printf("LIVE_URL: %s\n", url ? url : "(null)");
     fflush(stdout);
 
