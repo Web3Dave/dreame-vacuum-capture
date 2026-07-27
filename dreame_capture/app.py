@@ -273,43 +273,66 @@ def devices():
     return jsonify({"success": True, "devices": list_devices(protocol)})
 
 
+def _grab_frame(input_url, snapshot_path):
+    transport_args = ["-rtsp_transport", "tcp"] if input_url.startswith("rtsp://") else []
+    result = subprocess.run(
+        ["ffmpeg", "-y", *transport_args, "-i", input_url, "-frames:v", "1", snapshot_path],
+        capture_output=True, text=True, timeout=15,
+    )
+    ok = result.returncode == 0 and os.path.exists(snapshot_path)
+    return ok, result.stderr
+
+
 @app.route("/capture", methods=["POST"])
 def capture():
     body = _require_body("username", "password", "four_digit_code", "did")
     did = body["did"]
-
-    # The vacuum's camera only supports one live encoder session at a time -
-    # starting a second one (via a fresh run_activation) would kill whatever
-    # session /stream/start already has running. If a stream is active, grab
-    # a frame from its existing feed instead of starting a competing one.
-    with _streams_lock:
-        existing = _active_streams.get(did)
-        reuse_live_url = existing["live_url"] if existing and existing["p2p_proc"].poll() is None else None
-
-    owns_session = reuse_live_url is None
-    if owns_session:
-        proc, live_url = run_activation(
-            body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
-        )
-    else:
-        live_url = reuse_live_url
 
     media_dir = _media_dir(did)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     snapshot_path = os.path.join(media_dir, f"snapshot_{timestamp}.jpg")
     latest_path = os.path.join(media_dir, "latest.jpg")
 
+    # The vacuum's camera only supports one live encoder session at a time -
+    # starting a second one (via run_activation) would kill whatever session
+    # /stream/start already has running. And p2p_sample's own local FLV proxy
+    # appears to only tolerate one direct HTTP client - opening a second raw
+    # connection to it (rather than to MediaMTX) kicks out the republish
+    # ffmpeg's existing one, confirmed directly from the add-on log: the
+    # republish connection died at the exact moment a /capture grabbed the
+    # live_url directly. So if a stream is active, read the frame back via
+    # MediaMTX's RTSP output instead (an ordinary reader connection, already
+    # proven not to disturb the publisher) rather than the raw feed.
+    #
+    # If that RTSP read fails, the stream itself is genuinely down and its
+    # own watchdog is already working on recovering it - don't start a
+    # competing independent session that would fight with that recovery.
+    # Only run an independent session when no stream is active at all.
+    proc = None
+    owns_session = False
+    with _streams_lock:
+        existing = _active_streams.get(did)
+        stream_active = existing is not None and existing["p2p_proc"].poll() is None
+        rtsp_url = existing["rtsp_url"] if stream_active else None
+
     try:
-        result = subprocess.run(
-            ["ffmpeg", "-y", "-i", live_url, "-frames:v", "1", snapshot_path],
-            capture_output=True, text=True, timeout=15,
-        )
-        if result.returncode != 0 or not os.path.exists(snapshot_path):
-            abort(502, f"ffmpeg failed to capture a frame: {result.stderr[-500:]}")
+        if stream_active:
+            ok, stderr = _grab_frame(rtsp_url, snapshot_path)
+            if not ok:
+                abort(502, f"Active stream isn't producing frames right now (it should self-recover shortly): {stderr[-300:]}")
+        else:
+            owns_session = True
+            proc, live_url = run_activation(
+                body["username"], body["password"], body.get("country", "eu"), body["four_digit_code"], did,
+            )
+            ok, stderr = _grab_frame(live_url, snapshot_path)
+            if not ok:
+                abort(502, f"ffmpeg failed to capture a frame: {stderr[-500:]}")
+
         with open(snapshot_path, "rb") as src, open(latest_path, "wb") as dst:
             dst.write(src.read())
     finally:
-        if owns_session:
+        if owns_session and proc is not None:
             proc.terminate()
             try:
                 proc.wait(timeout=5)
