@@ -1,7 +1,7 @@
 # Dreame Vacuum Companion — Home Assistant Add-on
 
 Companion backend for the **Dreame Vacuum Core** integration
-([dreame-vacuum-capture-integration](https://github.com/Web3Dave/dreame-vacuum-capture-integration)).
+([dreame-vacuum-core](https://github.com/Web3Dave/dreame-vacuum-core)).
 It also hosts the control-panel UI, served in the Home Assistant sidebar via Ingress.
 It talks to Dreame's cloud API and Tencent's XP2P SDK to pull snapshots and RTSP
 streams from your vacuum's onboard camera, using your own Dreame account credentials.
@@ -70,7 +70,7 @@ add-on's configured `api_token`.
    and choose **Repositories**.
 3. Paste this repository URL and click **Add**:
    ```
-   https://github.com/Web3Dave/dreame-vacuum-video-capture
+   https://github.com/Web3Dave/dreame-vacuum-companion
    ```
 4. Refresh the page, install **Dreame Vacuum Camera Capture**.
 5. On the **Configuration** tab, set `api_token` to any random string (e.g.
@@ -80,7 +80,7 @@ add-on's configured `api_token`.
    that is automatically stopped. Clear the field entirely to disable this and
    let streams run indefinitely.
 6. Start the add-on and check the **Log** tab for a clean startup.
-7. Install the [companion integration](https://github.com/Web3Dave/dreame-vacuum-capture-integration)
+7. Install the [companion integration](https://github.com/Web3Dave/dreame-vacuum-core)
    - that's where your Dreame credentials, region, PIN, and device selection actually
    go, and where the camera entities get created.
 
