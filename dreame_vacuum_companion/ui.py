@@ -97,4 +97,6 @@ def health():
 
 if __name__ == "__main__":
     store.init()
-    app.run(host="0.0.0.0", port=UI_PORT, threaded=True)
+    from waitress import serve
+
+    serve(app, host="0.0.0.0", port=UI_PORT, threads=4)

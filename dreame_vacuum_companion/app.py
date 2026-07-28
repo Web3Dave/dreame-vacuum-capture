@@ -732,6 +732,22 @@ def health():
     return jsonify({"status": "ok"})
 
 
+@app.after_request
+def _log_request(response):
+    """Waitress doesn't log requests the way the dev server did, and that log
+    has been the main tool for telling "the client never called" apart from
+    "the call failed"."""
+    app.logger.info("%s %s -> %s", request.method, request.full_path.rstrip("?"), response.status_code)
+    return response
+
+
 if __name__ == "__main__":
     store.init()
-    app.run(host="0.0.0.0", port=8099, threaded=True)
+    # Not Flask's dev server: it mishandles HTTP keep-alive, which surfaced as
+    # aiohttp in Home Assistant raising "Server disconnected" when it reused a
+    # pooled connection the server had already dropped. Long requests
+    # (/stream/start blocks for ~10s) also need real concurrency, or a single
+    # start would stall every status poll behind it.
+    from waitress import serve
+
+    serve(app, host="0.0.0.0", port=8099, threads=8)
