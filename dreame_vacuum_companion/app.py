@@ -686,7 +686,11 @@ def stream_status():
     with _streams_lock:
         entry = _active_streams.get(did)
         running = bool(entry and entry["p2p_proc"].poll() is None)
-    return jsonify({"running": running})
+        # The url is reported here so a client can attach to a stream without
+        # being able to start one: /stream/start is the only way to open a
+        # camera session on the device.
+        rtsp_url = entry["rtsp_url"] if running else None
+    return jsonify({"running": running, "rtsp_url": rtsp_url})
 
 
 @app.route("/latest.jpg", methods=["GET"])
