@@ -418,13 +418,23 @@ def _spawn_ffmpeg_republish(live_url, rtsp_url):
 
 
 def _path_inbound_bytes(did):
-    """None means "no active publisher on this path" (dead), not "unknown"."""
+    """None means "no active publisher on this path" (dead), not "unknown".
+
+    Uses the list endpoint rather than /v3/paths/get/<name>: the latter 404s
+    when a path is absent, and MediaMTX logs every one of those at ERR level.
+    Since this is polled twice a second while a stream starts, that produced a
+    stream of alarming-looking "path not found" errors during entirely normal
+    startup. The list endpoint returns 200 with an empty array instead.
+    """
     try:
-        resp = requests.get(f"{MEDIAMTX_API}/v3/paths/get/{did}", timeout=3)
+        resp = requests.get(f"{MEDIAMTX_API}/v3/paths/list", timeout=3)
         if resp.status_code != 200:
             return None
-        return resp.json().get("inboundBytes")
-    except requests.RequestException:
+        for item in resp.json().get("items") or []:
+            if item.get("name") == did:
+                return item.get("inboundBytes")
+        return None
+    except (requests.RequestException, ValueError):
         return None
 
 
