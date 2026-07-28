@@ -86,21 +86,21 @@ add-on's configured `api_token`.
 
 ## Files
 
-- `dreame_capture/config.yaml` — add-on manifest (`api_token`/`stream_timeout_minutes`
+- `dreame_vacuum_companion/config.yaml` — add-on manifest (`api_token`/`stream_timeout_minutes`
   options, HTTP + RTSP ports, media mount)
-- `dreame_capture/Dockerfile` — multi-stage build (Ubuntu 20.04 builder, matching the
+- `dreame_vacuum_companion/Dockerfile` — multi-stage build (Ubuntu 20.04 builder, matching the
   toolchain Tencent's vendored static libraries were built with — a newer GCC will
   fail to link them) plus a bundled MediaMTX RTSP server
-- `dreame_capture/run.sh` — starts MediaMTX in the background, then the HTTP API in
+- `dreame_vacuum_companion/run.sh` — starts MediaMTX in the background, then the HTTP API in
   the foreground
-- `dreame_capture/mediamtx.yml` — minimal MediaMTX config (RTSP only, dynamic paths)
-- `dreame_capture/app.py` — the HTTP API described above
-- `dreame_capture/dreame_sign.py` — the reverse-engineered Dreame request-signing
+- `dreame_vacuum_companion/mediamtx.yml` — minimal MediaMTX config (RTSP only, dynamic paths)
+- `dreame_vacuum_companion/app.py` — the HTTP API described above
+- `dreame_vacuum_companion/dreame_sign.py` — the reverse-engineered Dreame request-signing
   algorithm
-- `dreame_capture/dreame_lib/` — a trimmed-down copy of the Dreame Home Assistant
+- `dreame_vacuum_companion/dreame_lib/` — a trimmed-down copy of the Dreame Home Assistant
   integration's cloud-protocol client (login, device discovery, signed API calls) —
   just the network layer
-- `dreame_capture/pc_client/` — Tencent's real, publicly-published XP2P SDK static
+- `dreame_vacuum_companion/pc_client/` — Tencent's real, publicly-published XP2P SDK static
   libraries (`tencentyun/iot-p2p-build` on GitHub) plus a small C wrapper
   (`p2p_sample.c`) from Tencent's own reference sample
 
