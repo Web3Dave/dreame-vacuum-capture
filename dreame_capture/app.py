@@ -36,6 +36,7 @@ import requests
 from flask import Flask, jsonify, send_file, abort, request
 
 sys.path.insert(0, os.path.dirname(__file__))
+import store
 from dreame_lib.protocol import DreameVacuumProtocol
 from dreame_sign import sign_params
 
@@ -54,7 +55,7 @@ STALL_THRESHOLD_SECONDS = 15
 # same on a 25s timer. Note the camera-service variant (siid 10001/piid 6) is
 # NOT implemented on this vacuum (returns code -1), but this general one is.
 SIID_KEEP_ALIVE = 14
-PIID_KEEP_ALIVE = 4
+PIID_DEVICE_KEEP_ALIVE = 4
 KEEP_ALIVE_INTERVAL_SECONDS = 20
 
 SIID_CAMERA_SERVICE = 10001
@@ -77,7 +78,7 @@ AIID_STREAM_CODE = 4
 # CAMERA_OPERATE (aiid 1), NOT PROPERTY_OPERATE - and reading siid 10001/piid 6
 # as a plain property just returns -1, which is what made it look unsupported.
 AIID_CAMERA_OPERATE = 1
-PIID_KEEP_ALIVE = 6
+PIID_CAMERA_KEEP_ALIVE = 6
 KEEP_ALIVE_VIDEO_STATUS = "opened"
 AIID_STREAM_VIDEO = 1
 PIID_STREAM_CODE_OPEN = 1100
@@ -440,12 +441,12 @@ def _refresh_keep_alive(protocol, did):
     """Returns the device's reported value, or None on failure. The app always
     sends 1; the device answers with its total connected-client count.
     """
-    resp = protocol.get_properties([{"did": did, "siid": SIID_KEEP_ALIVE, "piid": PIID_KEEP_ALIVE}])
+    resp = protocol.get_properties([{"did": did, "siid": SIID_KEEP_ALIVE, "piid": PIID_DEVICE_KEEP_ALIVE}])
     value = None
     if resp and isinstance(resp, list) and resp[0].get("code") == 0:
         value = resp[0].get("value")
     if not value:
-        protocol.set_property(SIID_KEEP_ALIVE, PIID_KEEP_ALIVE, 1)
+        protocol.set_property(SIID_KEEP_ALIVE, PIID_DEVICE_KEEP_ALIVE, 1)
     return value
 
 
@@ -475,7 +476,7 @@ def _keep_alive_loop(did):
             # ~60s while the P2P channel stays perfectly healthy.
             try:
                 resp = camera_action(
-                    protocol, did, AIID_CAMERA_OPERATE, PIID_KEEP_ALIVE,
+                    protocol, did, AIID_CAMERA_OPERATE, PIID_CAMERA_KEEP_ALIVE,
                     {
                         "operType": "keep_alive",
                         "videoStatus": KEEP_ALIVE_VIDEO_STATUS,
@@ -689,10 +690,34 @@ def latest():
     return send_file(path, mimetype="image/jpeg")
 
 
+@app.route("/register", methods=["POST"])
+def register():
+    """Device registration pushed by the dreame_vacuum_core integration.
+
+    The integration is authoritative about which devices belong to it, so the
+    companion UI never has to infer ownership from an entity-registry dump.
+    Expected body:
+      {"entry_id": "...", "devices": [{"did","name","model","entities":{...}}]}
+    """
+    body = _require_body("entry_id", "devices")
+    devices = body["devices"]
+    if not isinstance(devices, list):
+        abort(400, "devices must be a list")
+    count = store.register_devices(str(body["entry_id"]), devices)
+    app.logger.warning("registered %d device(s) from entry %s", count, body["entry_id"])
+    return jsonify({"success": True, "registered": count})
+
+
+@app.route("/registered", methods=["GET"])
+def registered():
+    return jsonify({"devices": store.list_devices()})
+
+
 @app.route("/health", methods=["GET"])
 def health():
     return jsonify({"status": "ok"})
 
 
 if __name__ == "__main__":
+    store.init()
     app.run(host="0.0.0.0", port=8099, threaded=True)

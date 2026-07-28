@@ -7,4 +7,8 @@ set -e
 # did as an RTSP path directly.
 mediamtx ./mediamtx.yml &
 
+# Control panel UI (Ingress-only, separate port from the token-authed API in
+# app.py so the UI is never reachable from the LAN).
+python3 ui.py &
+
 exec python3 app.py

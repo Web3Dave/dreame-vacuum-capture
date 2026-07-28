@@ -1,11 +1,11 @@
-name: Dreame Vacuum Camera Capture
+name: Dreame Vacuum Companion
 description: >-
-  Backend engine for the Dreame Vacuum Camera Capture integration. Talks to
-  Dreame's cloud API and Tencent's XP2P SDK to pull snapshots and RTSP
-  streams from your vacuum's onboard camera. Not meant to be used directly -
-  install the companion custom integration, which drives this add-on's API.
-version: "2.4.0"
-slug: dreame_capture
+  Companion backend for the Dreame Vacuum Core integration. Pulls snapshots
+  and RTSP streams from the vacuum's onboard camera via Tencent's XP2P SDK,
+  and hosts the control panel UI. Install the dreame_vacuum_core integration
+  alongside it - that owns the vacuum entities and drives this add-on's API.
+version: "3.0.0"
+slug: dreame_vacuum_companion
 url: https://github.com/Web3Dave/dreame-vacuum-video-capture
 init: false
 arch:
@@ -13,11 +13,24 @@ arch:
 startup: application
 boot: auto
 
+# UI panel in the HA sidebar. Ingress is authenticated by Home Assistant, so
+# the UI needs no login of its own - and deliberately runs on a *different*
+# port from the token-authenticated machine API below.
+ingress: true
+ingress_port: 8100
+panel_icon: mdi:robot-vacuum
+panel_title: Dreame
+panel_admin: false
+
+# Lets the UI read entity state and call services instead of duplicating
+# vacuum state that Home Assistant already owns.
+homeassistant_api: true
+
 ports:
   8099/tcp: 8099
   8554/tcp: 8554
 ports_description:
-  8099/tcp: HTTP API (called by the Dreame Vacuum Camera Capture integration)
+  8099/tcp: HTTP API (called by the dreame_vacuum_core integration)
   8554/tcp: RTSP (one path per device, e.g. rtsp://<host>:8554/<did>)
 
 options:

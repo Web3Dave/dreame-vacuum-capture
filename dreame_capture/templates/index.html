@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    .pill { font-size:12px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+    .pill.ok { color:var(--ok); border-color:var(--ok); }
+    .pill.bad { color:var(--bad); border-color:var(--bad); }
+    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .card h2 { font-size:16px; margin:0 0 2px; font-weight:600; }
+    .model { color:var(--muted); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }
+    td { padding:5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+    td:first-child { color:var(--muted); width:38%; }
+    td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+    .empty { background:var(--card); border:1px dashed var(--line); border-radius:12px;
+             padding:28px; text-align:center; color:var(--muted); }
+    code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px;
+           font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    footer { margin-top:28px; color:var(--muted); font-size:12px; }
+    .todo { margin-top:24px; }
+    .todo ul { margin:8px 0 0; padding-left:20px; }
+    .todo li { margin:3px 0; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    {% if ha_up %}
+      <span class="pill ok">Home Assistant connected</span>
+    {% else %}
+      <span class="pill bad">Home Assistant API unavailable</span>
+    {% endif %}
+    {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
+  </header>
+
+  {% if devices %}
+    <div class="grid">
+      {% for dev in devices %}
+        <div class="card">
+          <h2>{{ dev.name or dev.did }}</h2>
+          <div class="model">{{ dev.model or 'unknown model' }} &middot; did {{ dev.did }}</div>
+          {% if dev.state %}
+            <table>
+              {% for role, s in dev.state.items() %}
+                <tr>
+                  <td>{{ role }}</td>
+                  <td>
+                    {{ s.state }}
+                    {% if s.attributes.battery_level is defined %}
+                      &middot; {{ s.attributes.battery_level }}%
+                    {% endif %}
+                  </td>
+                </tr>
+              {% endfor %}
+            </table>
+          {% elif dev.entities %}
+            <table>
+              {% for role, eid in dev.entities.items() %}
+                <tr><td>{{ role }}</td><td><code>{{ eid }}</code></td></tr>
+              {% endfor %}
+            </table>
+            <p class="sub" style="margin-bottom:0">State unavailable &mdash; check the Home Assistant API connection.</p>
+          {% else %}
+            <p class="sub" style="margin-bottom:0">No entities reported.</p>
+          {% endif %}
+        </div>
+      {% endfor %}
+    </div>
+  {% else %}
+    <div class="empty">
+      <p style="margin-top:0"><strong>No devices registered yet.</strong></p>
+      <p>Install and configure the <code>dreame_vacuum_core</code> integration.
+         It registers its devices with this add-on on startup.</p>
+    </div>
+  {% endif %}
+
+  <div class="todo card">
+    <strong>Not built yet</strong>
+    <ul>
+      <li>Patrol / security route editor (routes are already persisted in SQLite)</li>
+      <li>Live camera view via the RTSP feed</li>
+      <li>Sound playback &mdash; <code>siid 7 / aiid 2 / piid 4</code></li>
+      <li>Closed-loop <em>rotate to heading</em> (pose feedback is ~0.4&nbsp;Hz, so step&rarr;settle&rarr;measure)</li>
+    </ul>
+  </div>
+
+  <footer>
+    {{ devices|length }} device(s) &middot; {{ routes|length }} route(s) &middot;
+    control flows through Home Assistant, which remains the source of truth for vacuum state.
+  </footer>
+</body>
+</html>

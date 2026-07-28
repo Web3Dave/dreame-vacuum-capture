@@ -1,7 +1,8 @@
-# Dreame Vacuum Camera Capture — Home Assistant Add-on (backend)
+# Dreame Vacuum Companion — Home Assistant Add-on
 
-The backend engine behind the **Dreame Vacuum Camera Capture** Home Assistant
-integration ([dreame-vacuum-capture-integration](https://github.com/Web3Dave/dreame-vacuum-capture-integration)).
+Companion backend for the **Dreame Vacuum Core** integration
+([dreame-vacuum-capture-integration](https://github.com/Web3Dave/dreame-vacuum-capture-integration)).
+It also hosts the control-panel UI, served in the Home Assistant sidebar via Ingress.
 It talks to Dreame's cloud API and Tencent's XP2P SDK to pull snapshots and RTSP
 streams from your vacuum's onboard camera, using your own Dreame account credentials.
 
@@ -151,3 +152,31 @@ add-on's configured `api_token`.
   `/stream/start`'s original credentials are what make step 2 possible, which is
   why they're retained in memory while a stream is active. With the keep-alive
   working this should now be a rare fallback rather than a once-a-minute event.
+
+## Ports
+
+| Port | Purpose | Auth |
+|---|---|---|
+| 8099 | Machine API — called by the `dreame_vacuum_core` integration | `X-Api-Token` |
+| 8100 | Control panel UI | Ingress only (authenticated by Home Assistant) |
+| 8554 | RTSP, one path per device | none (loopback/LAN) |
+
+The UI deliberately runs on a **different port** from the API: the API needs a
+shared secret because it takes credentials, while the UI is reachable only
+through Ingress and is never exposed to the LAN.
+
+## How the UI knows which devices exist
+
+The integration pushes its device list to `POST /register` on setup. That is
+authoritative information the add-on cannot reliably derive itself — Home
+Assistant's REST API exposes entity *states* but not which integration owns
+them (that mapping is WebSocket-only). Registrations are stored in SQLite at
+`/data/companion.db`.
+
+Vacuum **state** is deliberately not stored here. Home Assistant owns it, and
+the UI reads it live over the HA API (`homeassistant_api: true`), so there is
+no second copy to drift.
+
+SQLite rather than PostgreSQL: the data is device registrations and patrol
+routes — kilobytes, single writer. Bundling a database server would mean a much
+larger image and more failure modes for no benefit.

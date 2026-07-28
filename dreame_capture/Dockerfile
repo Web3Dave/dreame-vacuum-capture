@@ -57,9 +57,13 @@ COPY --from=builder /build/build/p2p_sample ./p2p_sample
 COPY dreame_lib/ dreame_lib/
 COPY dreame_sign.py .
 COPY app.py .
+COPY store.py .
+COPY ha_client.py .
+COPY ui.py .
+COPY templates/ templates/
 COPY run.sh .
 COPY mediamtx.yml .
 RUN chmod +x run.sh
 
-EXPOSE 8099 8554
+EXPOSE 8099 8100 8554
 CMD ["./run.sh"]
