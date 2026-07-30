@@ -69,6 +69,24 @@ CREATE TABLE IF NOT EXISTS run_steps (
 );
 
 CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(run_id, id);
+
+-- Tasks are authored here and stay here: the app is the source of truth, and
+-- exporting to a Home Assistant script is a one-way snapshot the user then
+-- owns. Nothing writes to Home Assistant's config, so there is no second copy
+-- to reconcile.
+--
+-- A task belongs to one vacuum, because its coordinates are millimetres in
+-- that vacuum's map frame and mean nothing on another robot.
+CREATE TABLE IF NOT EXISTS tasks (
+    slug       TEXT PRIMARY KEY,
+    did        TEXT NOT NULL,
+    name       TEXT NOT NULL,
+    steps      TEXT NOT NULL,     -- json: [{"type": "...", ...}]
+    created_at INTEGER,
+    updated_at INTEGER
+);
+
+CREATE INDEX IF NOT EXISTS idx_tasks_did ON tasks(did);
 """
 
 
@@ -266,3 +284,59 @@ def list_runs(did=None, limit=50):
                 "steps": [{"at": s_at, "text": s_text} for s_at, s_text in steps],
             })
     return out
+
+
+# -- tasks ----------------------------------------------------------------
+def slugify(value):
+    """A stable, typeable handle - this is what an automation refers to."""
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
+    return cleaned.strip("_").lower()[:48]
+
+
+def save_task(slug, did, name, steps):
+    now = int(time.time())
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT INTO tasks (slug, did, name, steps, created_at, updated_at) "
+            "VALUES (?,?,?,?,?,?) "
+            "ON CONFLICT(slug) DO UPDATE SET did=excluded.did, name=excluded.name, "
+            "steps=excluded.steps, updated_at=excluded.updated_at",
+            (slug, str(did), name, json.dumps(steps), now, now),
+        )
+
+
+def get_task(slug):
+    with _lock, _connect() as db:
+        row = db.execute(
+            "SELECT slug, did, name, steps, created_at, updated_at FROM tasks WHERE slug = ?",
+            (slug,),
+        ).fetchone()
+    return _task_row(row) if row else None
+
+
+def list_tasks(did=None):
+    query = "SELECT slug, did, name, steps, created_at, updated_at FROM tasks"
+    params = []
+    if did:
+        query += " WHERE did = ?"
+        params.append(str(did))
+    query += " ORDER BY name COLLATE NOCASE"
+    with _lock, _connect() as db:
+        rows = db.execute(query, params).fetchall()
+    return [_task_row(row) for row in rows]
+
+
+def delete_task(slug):
+    with _lock, _connect() as db:
+        return db.execute("DELETE FROM tasks WHERE slug = ?", (slug,)).rowcount > 0
+
+
+def _task_row(row):
+    try:
+        steps = json.loads(row[3] or "[]")
+    except ValueError:
+        steps = []
+    return {
+        "slug": row[0], "did": row[1], "name": row[2], "steps": steps,
+        "created_at": row[4], "updated_at": row[5],
+    }

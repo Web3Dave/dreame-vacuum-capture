@@ -46,6 +46,7 @@ import requests
 from flask import Flask, jsonify, send_file, abort, request
 
 sys.path.insert(0, os.path.dirname(__file__))
+import steps as step_schema
 import store
 from dreame_lib.protocol import DreameVacuumProtocol
 from dreame_sign import sign_params
@@ -825,6 +826,75 @@ def snapshot_file(tag, filename):
     if not os.path.exists(path):
         abort(404, "No such snapshot")
     return send_file(path, mimetype="image/jpeg")
+
+
+@app.route("/tasks", methods=["GET"])
+def get_tasks():
+    return jsonify({
+        "tasks": store.list_tasks(request.args.get("did")),
+        "step_types": {
+            kind: {
+                "label": spec["label"], "help": spec["help"],
+                "fields": [
+                    {"name": n, "type": t, "required": r, "default": d, "help": h}
+                    for n, t, r, d, h in spec["fields"]
+                ],
+            }
+            for kind, spec in step_schema.STEP_TYPES.items()
+        },
+    })
+
+
+@app.route("/tasks", methods=["POST"])
+def put_task():
+    """Create or update a task. The slug is derived from the name unless given,
+    because it is what automations refer to and should not change silently."""
+    body = _require_body("did", "name", "steps")
+    slug = store.slugify(body.get("slug") or body["name"])
+    if not slug:
+        abort(400, "Could not make an id from that name - use letters or numbers")
+    try:
+        validated = step_schema.validate_steps(body["steps"])
+    except step_schema.StepError as err:
+        abort(400, str(err))
+    store.save_task(slug, body["did"], body["name"], validated)
+    return jsonify({"success": True, "task": store.get_task(slug)})
+
+
+@app.route("/tasks/<slug>", methods=["GET"])
+def get_task(slug):
+    task = store.get_task(slug)
+    if not task:
+        abort(404, f"No task '{slug}'")
+    return jsonify({"task": task})
+
+
+@app.route("/tasks/<slug>", methods=["DELETE"])
+def remove_task(slug):
+    if not store.delete_task(slug):
+        abort(404, f"No task '{slug}'")
+    return jsonify({"success": True})
+
+
+@app.route("/tasks/<slug>/calls", methods=["GET"])
+def task_calls(slug):
+    """The task as Home Assistant service calls - what the integration runs and
+    what the export writes out, from one place so they cannot diverge."""
+    task = store.get_task(slug)
+    if not task:
+        abort(404, f"No task '{slug}'")
+    device = store.get_device(task["did"]) or {}
+    entities = device.get("entities") or {}
+    vacuum = request.args.get("vacuum") or entities.get("vacuum")
+    if not vacuum:
+        abort(409, "This vacuum has not registered its entities with the add-on yet")
+    try:
+        calls = step_schema.to_service_calls(
+            task["steps"], vacuum, request.args.get("stream") or entities.get("stream")
+        )
+    except step_schema.StepError as err:
+        abort(409, str(err))
+    return jsonify({"task": task, "calls": calls})
 
 
 @app.route("/runs", methods=["POST"])
