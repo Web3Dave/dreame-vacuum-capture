@@ -33,6 +33,7 @@ GET  /snapshots/<tag>/<file>
 POST /map           multipart: did, meta (json), image (png)
                     -> the rendered map used to pick coordinates
 GET  /map/<did>     -> geometry: origin, grid_size, scale, size
+GET  /map/<did>/document -> the grid itself, for a client that renders it
 GET  /map/<did>.png
 GET  /health        (no auth - liveness only)
 """
@@ -857,6 +858,14 @@ def put_map():
     meta["updated_at"] = int(time.time())
     with open(os.path.join(MAP_ROOT, f"{safe}.json"), "w") as handle:
         json.dump(meta, handle)
+
+    document = request.form.get("document")
+    if document:
+        # Kept separate from the image: a client that renders the grid itself
+        # never fetches the picture, and one that only wants a picture never
+        # downloads 17KB of grid.
+        with open(os.path.join(MAP_ROOT, f"{safe}.map.json"), "w") as handle:
+            handle.write(document)
     return jsonify({"success": True, "meta": meta})
 
 
@@ -867,6 +876,14 @@ def get_map_meta(did):
         abort(404, "No map has been published for this vacuum yet")
     with open(path) as handle:
         return jsonify({"meta": json.load(handle)})
+
+
+@app.route("/map/<did>/document", methods=["GET"])
+def get_map_document(did):
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.map.json")
+    if not os.path.exists(path):
+        abort(404, "No map document has been published for this vacuum yet")
+    return send_file(path, mimetype="application/json")
 
 
 @app.route("/map/<did>.png", methods=["GET"])

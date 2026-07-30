@@ -99,11 +99,8 @@
     button[disabled] { opacity:.55; cursor:not-allowed; }
     .pick-wrap { position:relative; display:inline-block; line-height:0;
       background:rgba(127,127,127,.10); border-radius:8px; max-width:100%; }
-    .pick-wrap img { max-width:100%; height:auto; image-rendering:pixelated;
-      cursor:crosshair; border-radius:8px; }
-    .pick-dot { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px;
-      border-radius:50%; background:#ff5252; border:2px solid #fff; pointer-events:none;
-      box-shadow:0 0 0 1px rgba(0,0,0,.35); }
+    .pick-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated;
+      cursor:crosshair; border-radius:8px; display:block; }
     #picker { width:min(900px,96vw); }
     pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
@@ -166,9 +163,11 @@
     </div>
     <div class="dlg-body">
       <div id="pick-wrap" class="pick-wrap">
-        <img id="pick-img" alt="Vacuum map">
-        <div id="pick-dot" class="pick-dot" hidden></div>
+        <canvas id="pick-canvas"></canvas>
       </div>
+      <label class="tg" style="margin-top:10px">
+        <input type="checkbox" id="pick-names"> show room names
+      </label>
       <p class="hint" id="pick-readout">Click the map to choose a point.</p>
       <p class="err" id="pick-err" hidden></p>
     </div>
@@ -319,13 +318,35 @@
       return stepsState;
     }
 
-    let mapMeta = null, pickStep = null, picked = null;
+    // The renderer is served by the integration, so the picker and any
+    // dashboard card share one implementation of the coordinate transform.
+    let mapApi = null, mapDoc = null, pickStep = null, picked = null;
+
+    async function mapModule() {
+      if (!mapApi) mapApi = await import("/dreame_vacuum_core/map.js");
+      return mapApi;
+    }
+
+    function drawPicker() {
+      if (!mapDoc) return;
+      const canvas = $("pick-canvas");
+      const scale = mapDoc.suggested_scale || 5;
+      canvas.width = mapDoc.cols * scale;
+      canvas.height = mapDoc.rows * scale;
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      mapApi.drawBase(ctx, mapDoc, {scale, showRoomNames: $("pick-names").checked});
+      if (mapDoc.robot) {
+        mapApi.drawVacuum(ctx, mapDoc, {x: mapDoc.robot[0], y: mapDoc.robot[1],
+                                        heading: mapDoc.angle}, {scale});
+      }
+      if (picked) mapApi.drawMarker(ctx, mapDoc, picked, {scale});
+    }
 
     function stepDid() { return $("t-did").value; }
 
     async function openPicker(index) {
       pickStep = index; picked = null;
-      $("pick-dot").hidden = true;
       $("pick-select").disabled = true;
       $("pick-err").hidden = true;
       $("pick-readout").textContent = "Loading map...";
@@ -340,11 +361,20 @@
       const res = await fetch(`${BASE}/api/map/${did}${refresh ? "?refresh=1" : ""}`);
       const body = await res.json().catch(() => ({}));
       if (!res.ok) return pickFail(body.error || "No map available yet.");
-      mapMeta = body.meta;
-      // Cache-bust so a refreshed map is actually shown.
-      $("pick-img").src = `${BASE}/map/${did}.png?v=${mapMeta.updated_at || Date.now()}`;
+
+      const docRes = await fetch(`${BASE}/map/${did}/document?v=${body.meta.updated_at || Date.now()}`);
+      if (!docRes.ok) return pickFail("This map was published by an older version - press Refresh map.");
+      try {
+        const api = await mapModule();
+        mapDoc = api.decodeMap(await docRes.json());
+      } catch (err) {
+        return pickFail(`Could not read the map: ${err.message}`);
+      }
+      picked = null;
+      $("pick-select").disabled = true;
       $("pick-err").hidden = true;
       $("pick-readout").textContent = "Click the map to choose a point.";
+      drawPicker();
     }
 
     function pickFail(message) {
@@ -354,30 +384,31 @@
     }
 
     function onMapClick(event) {
-      if (!mapMeta) return;
-      const img = $("pick-img");
-      const rect = img.getBoundingClientRect();
-      // The image is displayed at whatever width fits, so translate the click
-      // into the rendered image's own pixels before converting to millimetres.
-      const ratio = img.naturalWidth / rect.width;
-      const px = (event.clientX - rect.left) * ratio;
-      const py = (event.clientY - rect.top) * ratio;
-      const [ox, oy] = mapMeta.origin;
-      const grid = mapMeta.grid_size, scale = mapMeta.scale || 1;
-      const rows = (mapMeta.cells || [0, 0])[1];
-      // The map's y axis increases upward and image rows increase downward,
-      // so the render is drawn bottom-up and this undoes it. Change one and
-      // you must change the other, or a click selects the wrong place.
-      picked = {
-        x: Math.round(ox + (px / scale + 0.5) * grid),
-        y: Math.round(oy + ((rows - 1) - py / scale + 0.5) * grid),
-      };
-      const dot = $("pick-dot");
-      dot.style.left = `${event.clientX - rect.left}px`;
-      dot.style.top = `${event.clientY - rect.top}px`;
-      dot.hidden = false;
+      if (!mapDoc) return;
+      const canvas = $("pick-canvas");
+      const rect = canvas.getBoundingClientRect();
+      // The canvas is displayed at whatever width fits, so translate into its
+      // own pixels before asking the shared module for a coordinate.
+      const ratio = canvas.width / rect.width;
+      const point = mapApi.pixelToWorld(
+        mapDoc, (event.clientX - rect.left) * ratio,
+        (event.clientY - rect.top) * ratio, mapDoc.suggested_scale || 5);
+
+      const where = mapApi.describePoint(mapDoc, point.x, point.y);
+      if (!where.ok) {
+        // Selecting a wall produces a task that drives about and gives up,
+        // with nothing to say why - so refuse it here instead.
+        picked = null;
+        $("pick-select").disabled = true;
+        $("pick-readout").textContent = `That is ${where.reason} - pick a spot on the floor.`;
+        drawPicker();
+        return;
+      }
+      picked = point;
       $("pick-select").disabled = false;
-      $("pick-readout").textContent = `x ${picked.x}, y ${picked.y} (millimetres)`;
+      $("pick-readout").textContent =
+        `x ${point.x}, y ${point.y} (millimetres) in ${where.name}`;
+      drawPicker();
     }
 
     async function save() {
@@ -469,7 +500,8 @@
       }
     });
 
-    $("pick-img").addEventListener("click", onMapClick);
+    $("pick-canvas").addEventListener("click", onMapClick);
+    $("pick-names").addEventListener("change", drawPicker);
     load();
   </script>
 </body>

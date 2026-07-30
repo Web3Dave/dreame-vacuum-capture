@@ -164,6 +164,14 @@ def api_map(did):
         return jsonify({"meta": json.load(handle)})
 
 
+@app.route("/map/<did>/document")
+def map_document(did):
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.map.json")
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="application/json")
+
+
 @app.route("/map/<did>.png")
 def map_image(did):
     path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.png")
