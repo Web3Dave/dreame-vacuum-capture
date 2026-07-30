@@ -444,6 +444,20 @@
         const body = await res.json();
         $("export-yaml").textContent = body.yaml || body.error || "Nothing to export";
         $("exporter").showModal();
+      } else if (t.dataset.pick !== undefined) {
+        collectFromUi(); openPicker(Number(t.dataset.pick));
+      } else if (t.id === "pick-cancel") $("picker").close();
+      else if (t.id === "pick-refresh") {
+        t.disabled = true;
+        await loadMap(true);
+        t.disabled = false;
+      } else if (t.id === "pick-select") {
+        if (picked !== null && pickStep !== null) {
+          stepsState[pickStep].x = picked.x;
+          stepsState[pickStep].y = picked.y;
+          renderSteps();
+        }
+        $("picker").close();
       } else if (t.id === "export-close") $("exporter").close();
       else if (t.id === "export-copy") {
         navigator.clipboard?.writeText($("export-yaml").textContent);
