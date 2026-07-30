@@ -58,6 +58,17 @@ CREATE TABLE IF NOT EXISTS runs (
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
+
+-- Steps arrive while the errand is still running, so the UI can follow along
+-- rather than waiting for a result.
+CREATE TABLE IF NOT EXISTS run_steps (
+    id     INTEGER PRIMARY KEY AUTOINCREMENT,
+    run_id INTEGER NOT NULL,
+    at     REAL NOT NULL,
+    text   TEXT NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_run_steps_run ON run_steps(run_id, id);
 """
 
 
@@ -173,6 +184,43 @@ def delete_route(route_id: int) -> None:
 RUN_HISTORY = 200
 
 
+def start_run(did, command):
+    """Open a run and return its id. Steps and an outcome follow."""
+    with _lock, _connect() as db:
+        cur = db.execute(
+            "INSERT INTO runs (did, command, ok, at, summary, detail) VALUES (?,?,?,?,?,?)",
+            (str(did), str(command), -1, int(time.time()), None, "{}"),
+        )
+        run_id = cur.lastrowid
+        db.execute(
+            "DELETE FROM run_steps WHERE run_id NOT IN "
+            "(SELECT id FROM runs ORDER BY at DESC, id DESC LIMIT ?)",
+            (RUN_HISTORY,),
+        )
+        db.execute(
+            "DELETE FROM runs WHERE id NOT IN "
+            "(SELECT id FROM runs ORDER BY at DESC, id DESC LIMIT ?)",
+            (RUN_HISTORY,),
+        )
+    return run_id
+
+
+def add_step(run_id, text):
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT INTO run_steps (run_id, at, text) VALUES (?,?,?)",
+            (int(run_id), time.time(), str(text)),
+        )
+
+
+def finish_run(run_id, ok, summary, detail):
+    with _lock, _connect() as db:
+        db.execute(
+            "UPDATE runs SET ok = ?, summary = ?, detail = ? WHERE id = ?",
+            (1 if ok else 0, summary, json.dumps(detail or {}), int(run_id)),
+        )
+
+
 def add_run(did, command, ok, summary, detail):
     """Record one errand. Trimmed to the most recent RUN_HISTORY rows so this
     cannot grow without bound on a device that patrols on a schedule."""
@@ -200,13 +248,21 @@ def list_runs(did=None, limit=50):
     with _lock, _connect() as db:
         rows = db.execute(query, params).fetchall()
     out = []
-    for row in rows:
-        try:
-            detail = json.loads(row[6] or "{}")
-        except ValueError:
-            detail = {}
-        out.append({
-            "id": row[0], "did": row[1], "command": row[2], "ok": bool(row[3]),
-            "at": row[4], "summary": row[5], "detail": detail,
-        })
+    with _lock, _connect() as db:
+        for row in rows:
+            try:
+                detail = json.loads(row[6] or "{}")
+            except ValueError:
+                detail = {}
+            steps = db.execute(
+                "SELECT at, text FROM run_steps WHERE run_id = ? ORDER BY id", (row[0],)
+            ).fetchall()
+            out.append({
+                "id": row[0], "did": row[1], "command": row[2],
+                # -1 means still running - distinct from finished-and-failed.
+                "ok": None if row[3] == -1 else bool(row[3]),
+                "running": row[3] == -1,
+                "at": row[4], "summary": row[5], "detail": detail,
+                "steps": [{"at": s_at, "text": s_text} for s_at, s_text in steps],
+            })
     return out

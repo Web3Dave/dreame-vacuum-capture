@@ -20,8 +20,10 @@ POST /stream/stop   {did}
                     -> tears down a stream started above
 GET  /stream/status?did=...
 GET  /latest.jpg?did=...
-POST /runs          {did, command, ok, summary, detail}
-                    -> records an errand for the UI's Activity page
+POST /runs          {did, command} -> {id}
+                    -> opens an errand record for the UI's Activity page
+POST /runs/<id>/steps   {text}          -> appends a step while it runs
+POST /runs/<id>/finish  {ok, summary, detail}
 GET  /runs?did=&limit=
 GET  /health        (no auth - liveness only)
 """
@@ -731,17 +733,23 @@ def registered():
 
 
 @app.route("/runs", methods=["POST"])
-def add_run():
-    """Record what an errand did, for the UI's Activity page.
-
-    Posted by the integration, which is the only thing that knows how a
-    multi-step command actually went.
-    """
+def start_run():
+    """Open a run. Steps stream in against the returned id while it works."""
     body = _require_body("did", "command")
-    store.add_run(
-        body["did"], body["command"], bool(body.get("ok")),
-        body.get("summary"), body.get("detail"),
-    )
+    return jsonify({"success": True, "id": store.start_run(body["did"], body["command"])})
+
+
+@app.route("/runs/<int:run_id>/steps", methods=["POST"])
+def add_run_step(run_id):
+    body = _require_body("text")
+    store.add_step(run_id, body["text"])
+    return jsonify({"success": True})
+
+
+@app.route("/runs/<int:run_id>/finish", methods=["POST"])
+def finish_run(run_id):
+    body = request.get_json(silent=True) or {}
+    store.finish_run(run_id, bool(body.get("ok")), body.get("summary"), body.get("detail"))
     return jsonify({"success": True})
 
 

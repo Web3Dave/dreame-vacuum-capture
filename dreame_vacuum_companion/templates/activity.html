@@ -55,6 +55,14 @@
                border-radius:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
                font-size:12.5px; line-height:1.65; overflow-x:auto; white-space:pre; }
     .run .err { color:var(--bad); font-size:13px; margin:6px 0 0; }
+    .pill.run-live { color:var(--accent); border-color:var(--accent); }
+    .pill.run-live::before { content:""; display:inline-block; width:6px; height:6px;
+      border-radius:50%; background:var(--accent); margin-right:6px; vertical-align:1px;
+      animation:pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+    @media (prefers-reduced-motion:reduce) { .pill.run-live::before { animation:none } }
+    .run pre .t { color:var(--muted); }
+    .run pre.waiting { color:var(--muted); font-style:italic; }
   </style>
 
 </head>
@@ -69,40 +77,58 @@
     <a href="{{ base }}/activity" aria-current="page">Activity</a>
   </nav>
 
-  {% if runs %}
-    {% for run in runs %}
-      <div class="run">
-        <div class="run-head">
-          <span class="cmd">{{ run.command }}</span>
-          {% if run.ok %}
-            <span class="pill ok">ok</span>
-          {% else %}
-            <span class="pill bad">failed</span>
-          {% endif %}
-          <time datetime="{{ run.at }}" data-ts="{{ run.at }}">{{ run.at }}</time>
-        </div>
-        {% if run.summary %}<p class="summary">{{ run.summary }}</p>{% endif %}
-        {% if run.detail.error %}<p class="err">{{ run.detail.error }}</p>{% endif %}
-        {% if run.detail.trace %}<pre>{{ run.detail.trace | join('\n') }}</pre>{% endif %}
-      </div>
-    {% endfor %}
-  {% else %}
-    <div class="empty">
-      <p style="margin:0 0 6px"><strong>Nothing recorded yet</strong></p>
-      <p style="margin:0">Runs appear here after the integration performs an errand &mdash;
-      <code>inspect_point</code> or <code>rotate_to_heading</code>.</p>
-    </div>
-  {% endif %}
-
-  <footer>Showing the {{ runs | length }} most recent {% if runs %}of up to 200 kept{% endif %}.</footer>
+  <div id="runs"></div>
+  <footer id="foot"></footer>
 
   <script>
-    // Timestamps are stored as unix seconds; render them in the viewer's zone.
-    for (const el of document.querySelectorAll('time[data-ts]')) {
-      const d = new Date(Number(el.dataset.ts) * 1000);
-      el.textContent = d.toLocaleString();
-      el.setAttribute('datetime', d.toISOString());
+    const API = "{{ base }}/api/runs";
+    const host = document.getElementById('runs');
+    const foot = document.getElementById('foot');
+    const when = ts => new Date(ts * 1000).toLocaleTimeString();
+
+    function render(runs) {
+      if (!runs.length) {
+        host.innerHTML = '<div class="empty">' +
+          '<p style="margin:0 0 6px"><strong>Nothing recorded yet</strong></p>' +
+          '<p style="margin:0">Runs appear here while the integration performs an ' +
+          'errand such as <code>inspect_point</code>.</p></div>';
+        foot.textContent = '';
+        return;
+      }
+      host.innerHTML = runs.map(run => {
+        const badge = run.running ? '<span class="pill run-live">running</span>'
+                    : run.ok ? '<span class="pill ok">ok</span>'
+                             : '<span class="pill bad">failed</span>';
+        const steps = (run.steps || []).map(s =>
+          `<span class="t">${when(s.at)}</span>  ${esc(s.text)}`).join('\n');
+        return `<div class="run">
+          <div class="run-head">
+            <span class="cmd">${esc(run.command)}</span>${badge}
+            <time>${new Date(run.at * 1000).toLocaleString()}</time>
+          </div>
+          ${run.summary ? `<p class="summary">${esc(run.summary)}</p>` : ''}
+          ${run.detail && run.detail.error ? `<p class="err">${esc(run.detail.error)}</p>` : ''}
+          ${steps ? `<pre>${steps}</pre>` : (run.running ? '<pre class="waiting">waiting for the first step...</pre>' : '')}
+        </div>`;
+      }).join('');
+      foot.textContent = `${runs.length} most recent of up to 200 kept. Updating every 2s.`;
     }
+
+    function esc(v) {
+      return String(v ?? '').replace(/[&<>"]/g, c =>
+        ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    }
+
+    async function poll() {
+      try {
+        const res = await fetch(API, {cache: 'no-store'});
+        if (res.ok) render((await res.json()).runs || []);
+      } catch (err) {
+        foot.textContent = 'Lost contact with the add-on. Retrying.';
+      }
+    }
+    poll();
+    setInterval(poll, 2000);
   </script>
 </body>
 </html>
