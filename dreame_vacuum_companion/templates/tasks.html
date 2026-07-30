@@ -364,9 +364,13 @@
       const py = (event.clientY - rect.top) * ratio;
       const [ox, oy] = mapMeta.origin;
       const grid = mapMeta.grid_size, scale = mapMeta.scale || 1;
+      const rows = (mapMeta.cells || [0, 0])[1];
+      // The map's y axis increases upward and image rows increase downward,
+      // so the render is drawn bottom-up and this undoes it. Change one and
+      // you must change the other, or a click selects the wrong place.
       picked = {
         x: Math.round(ox + (px / scale + 0.5) * grid),
-        y: Math.round(oy + (py / scale + 0.5) * grid),
+        y: Math.round(oy + ((rows - 1) - py / scale + 0.5) * grid),
       };
       const dot = $("pick-dot");
       dot.style.left = `${event.clientX - rect.left}px`;
