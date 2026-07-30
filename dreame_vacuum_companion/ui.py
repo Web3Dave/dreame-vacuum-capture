@@ -148,10 +148,14 @@ def api_map(did):
         device = store.get_device(did) or {}
         entity = (device.get("entities") or {}).get("vacuum")
         if entity:
+            started = time.time()
             ok, detail = ha_client.call_service_result(
-                "dreame_vacuum_core", "publish_map", {"entity_id": entity}
+                "dreame_vacuum_core", "publish_map", {"entity_id": entity}, timeout=90
             )
             if not ok:
+                # Prefer the integration's own recorded reason: Home Assistant's
+                # is always "Server got itself in trouble".
+                detail = _last_failure_reason(did, started) or detail
                 return jsonify({"error": detail or "Could not refresh the map"}), 502
     path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.json")
     if not os.path.exists(path):

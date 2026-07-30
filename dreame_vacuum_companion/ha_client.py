@@ -76,7 +76,7 @@ def call_service(domain: str, service: str, data: dict | None = None) -> bool:
 
 
 def call_service_result(
-    domain: str, service: str, data: dict | None = None
+    domain: str, service: str, data: dict | None = None, timeout: int = 120
 ) -> tuple[bool, str]:
     """Call a service and return why it failed, not just that it did.
 
@@ -89,7 +89,7 @@ def call_service_result(
             f"{SUPERVISOR_CORE}/services/{domain}/{service}",
             headers=_headers(),
             data=json.dumps(data or {}),
-            timeout=120,
+            timeout=timeout,
         )
         if r.status_code in (200, 201):
             return True, ""
