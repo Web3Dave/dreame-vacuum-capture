@@ -13,6 +13,7 @@ route editing goes here next.
 from __future__ import annotations
 
 import os
+import time
 
 import os
 
@@ -246,10 +247,34 @@ def api_run_task(slug):
     # Runs through the integration rather than firing the steps from here, so
     # a run started in the UI is narrated and guarded exactly like one started
     # from an automation.
+    started = time.time()
     ok, detail = ha_client.call_service_result(
         "dreame_vacuum_core", "start_task", {"entity_id": vacuum, "task": slug}
     )
+    if not ok:
+        # Home Assistant answers any service error with a bare 500 and keeps the
+        # reason in its own log. The integration records that reason here as it
+        # refuses, so prefer our own copy over HA's "Server got itself in
+        # trouble".
+        detail = _last_failure_reason(task["did"], started) or detail
     return jsonify({"success": ok, "error": detail}), (200 if ok else 502)
+
+
+def _last_failure_reason(did, since):
+    """The error from this device's newest run, if it just failed.
+
+    Only the newest is considered: skipping over a later success to find an
+    older failure would report a reason from a different run entirely.
+    """
+    runs = store.list_runs(did, limit=1)
+    if not runs:
+        return None
+    run = runs[0]
+    if run.get("running") or run.get("ok"):
+        return None
+    if run.get("at", 0) < int(since) - 5:
+        return None
+    return (run.get("detail") or {}).get("error") or run.get("summary")
 
 
 def _script_yaml(task, calls):
