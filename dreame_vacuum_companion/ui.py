@@ -14,7 +14,9 @@ from __future__ import annotations
 
 import os
 
-from flask import Flask, jsonify, render_template, request
+import os
+
+from flask import Flask, abort, jsonify, render_template, request, send_file
 
 import ha_client
 import store
@@ -32,6 +34,43 @@ def _ingress_base() -> str:
 def _viewer() -> str | None:
     """Ingress passes the authenticated HA user - no separate login needed."""
     return request.headers.get("X-Remote-User-Display-Name")
+
+
+SNAPSHOT_ROOT = "/media/dreame-capture/snapshots"
+
+
+def _safe_tag(value):
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
+    return cleaned.strip("_")[:48].lower() or "general"
+
+
+def _snapshot_index(tag=None):
+    """Snapshots grouped by tag, newest first within each.
+
+    latest.jpg is skipped: it duplicates whichever timestamped file is newest.
+    """
+    if not os.path.isdir(SNAPSHOT_ROOT):
+        return []
+    wanted = _safe_tag(tag) if tag else None
+    groups = []
+    for name in sorted(os.listdir(SNAPSHOT_ROOT)):
+        folder = os.path.join(SNAPSHOT_ROOT, name)
+        if not os.path.isdir(folder) or (wanted and name != wanted):
+            continue
+        shots = []
+        for entry in os.listdir(folder):
+            if not entry.lower().endswith(".jpg") or entry == "latest.jpg":
+                continue
+            try:
+                taken = int(os.stat(os.path.join(folder, entry)).st_mtime)
+            except OSError:
+                continue
+            shots.append({"filename": entry, "taken_at": taken})
+        if not shots:
+            continue
+        shots.sort(key=lambda item: item["taken_at"], reverse=True)
+        groups.append({"tag": name, "count": len(shots), "snapshots": shots})
+    return groups
 
 
 @app.route("/")
@@ -88,6 +127,29 @@ def api_service():
         return jsonify({"error": "domain and service are required"}), 400
     ok = ha_client.call_service(domain, service, body.get("data") or {})
     return jsonify({"success": ok}), (200 if ok else 502)
+
+
+@app.route("/snapshots")
+def snapshots():
+    return render_template("snapshots.html", base=_ingress_base(), viewer=_viewer())
+
+
+@app.route("/api/snapshots")
+def api_snapshots():
+    return jsonify({"snapshots": _snapshot_index(request.args.get("tag"))})
+
+
+@app.route("/snapshot/<tag>/<filename>")
+def snapshot_image(tag, filename):
+    """Served through Ingress, so Home Assistant has already authenticated the
+    viewer - no token handling needed here."""
+    safe = os.path.basename(filename)
+    if not safe.lower().endswith(".jpg"):
+        abort(404)
+    path = os.path.join(SNAPSHOT_ROOT, _safe_tag(tag), safe)
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="image/jpeg")
 
 
 @app.route("/activity")

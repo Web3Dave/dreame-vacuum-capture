@@ -11,9 +11,9 @@ used directly by end users.
 POST /devices       {username, password, country}
                     -> discovers every device on the account
 POST /capture       {username, password, country, four_digit_code, did,
-                     category?}
+                     tag?}
                     -> one-shot: activation sequence -> grab one JPEG frame
-                       -> /media/dreame-capture/snapshots/<category>/<ts>.jpg
+                       -> /media/dreame-capture/snapshots/<tag>/<ts>.jpg
                           plus latest.jpg in the same folder -> tear down
 POST /stream/start  {username, password, country, four_digit_code, did}
                     -> activation sequence -> keeps the P2P session alive,
@@ -27,6 +27,9 @@ POST /runs          {did, command} -> {id}
 POST /runs/<id>/steps   {text}          -> appends a step while it runs
 POST /runs/<id>/finish  {ok, summary, detail}
 GET  /runs?did=&limit=
+GET  /snapshots?tag=&limit=
+                    -> what has been captured, newest first
+GET  /snapshots/<tag>/<file>
 GET  /health        (no auth - liveness only)
 """
 import hashlib
@@ -136,7 +139,7 @@ def _media_dir(did):
     return path
 
 
-def _safe_category(value):
+def _safe_tag(value):
     """A filesystem-safe folder name from caller-supplied text.
 
     Whitelisted rather than escaped: this becomes a path segment, and the
@@ -147,10 +150,10 @@ def _safe_category(value):
     return cleaned.lower() or "general"
 
 
-def _snapshot_dir(category):
-    """Snapshots live under a category rather than per device: a category like
+def _snapshot_dir(tag):
+    """Snapshots live under a tag rather than per device: a tag like
     'poop_check' is what someone actually looks for, and a did is not."""
-    path = os.path.join(MEDIA_ROOT, "snapshots", _safe_category(category))
+    path = os.path.join(MEDIA_ROOT, "snapshots", _safe_tag(tag))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -378,8 +381,8 @@ def capture():
     body = _require_body("username", "password", "four_digit_code", "did")
     did = body["did"]
 
-    category = _safe_category(body.get("category"))
-    snapshot_dir = _snapshot_dir(category)
+    tag = _safe_tag(body.get("tag"))
+    snapshot_dir = _snapshot_dir(tag)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
     snapshot_path = os.path.join(snapshot_dir, f"{timestamp}.jpg")
     latest_path = os.path.join(snapshot_dir, "latest.jpg")
@@ -444,7 +447,7 @@ def capture():
         "success": True,
         "path": snapshot_path,
         "latest": latest_path,
-        "category": category,
+        "tag": tag,
         # Relative to the media root, which is what a media-source or www
         # path needs - callers should not have to strip a prefix themselves.
         "media_path": os.path.relpath(snapshot_path, MEDIA_ROOT),
@@ -767,6 +770,61 @@ def register():
 @app.route("/registered", methods=["GET"])
 def registered():
     return jsonify({"devices": store.list_devices()})
+
+
+def _list_snapshots(tag=None):
+    """Snapshots on disk, newest first. latest.jpg is excluded - it is a copy
+    of whichever timestamped file is newest, not a capture of its own."""
+    root = os.path.join(MEDIA_ROOT, "snapshots")
+    if not os.path.isdir(root):
+        return []
+    tags = [_safe_tag(tag)] if tag else sorted(os.listdir(root))
+    out = []
+    for name in tags:
+        folder = os.path.join(root, name)
+        if not os.path.isdir(folder):
+            continue
+        for entry in os.listdir(folder):
+            if not entry.lower().endswith(".jpg") or entry == "latest.jpg":
+                continue
+            full = os.path.join(folder, entry)
+            try:
+                stat = os.stat(full)
+            except OSError:
+                continue
+            out.append({
+                "tag": name,
+                "filename": entry,
+                "media_path": os.path.relpath(full, MEDIA_ROOT),
+                "taken_at": int(stat.st_mtime),
+                "bytes": stat.st_size,
+            })
+    out.sort(key=lambda item: item["taken_at"], reverse=True)
+    return out
+
+
+@app.route("/snapshots", methods=["GET"])
+def snapshots():
+    tag = request.args.get("tag")
+    limit = int(request.args.get("limit", 100))
+    items = _list_snapshots(tag)
+    counts = {}
+    for item in items:
+        counts[item["tag"]] = counts.get(item["tag"], 0) + 1
+    return jsonify({"tags": counts, "snapshots": items[:limit]})
+
+
+@app.route("/snapshots/<tag>/<filename>", methods=["GET"])
+def snapshot_file(tag, filename):
+    """Serve one snapshot. Both segments are re-sanitised rather than trusted:
+    they arrive in a URL and are used to build a path."""
+    safe_name = os.path.basename(filename)
+    if not safe_name.lower().endswith(".jpg"):
+        abort(404)
+    path = os.path.join(_snapshot_dir(tag), safe_name)
+    if not os.path.exists(path):
+        abort(404, "No such snapshot")
+    return send_file(path, mimetype="image/jpeg")
 
 
 @app.route("/runs", methods=["POST"])
