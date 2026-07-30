@@ -97,6 +97,14 @@
     .task ol li.at { color:var(--text); font-weight:600; }
     .task ol li.at::marker { color:var(--accent); }
     button[disabled] { opacity:.55; cursor:not-allowed; }
+    .pick-wrap { position:relative; display:inline-block; line-height:0;
+      background:rgba(127,127,127,.10); border-radius:8px; max-width:100%; }
+    .pick-wrap img { max-width:100%; height:auto; image-rendering:pixelated;
+      cursor:crosshair; border-radius:8px; }
+    .pick-dot { position:absolute; width:14px; height:14px; margin:-7px 0 0 -7px;
+      border-radius:50%; background:#ff5252; border:2px solid #fff; pointer-events:none;
+      box-shadow:0 0 0 1px rgba(0,0,0,.35); }
+    #picker { width:min(900px,96vw); }
     pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
   </style>
@@ -149,6 +157,25 @@
         <button type="button" class="primary" id="save">Save</button>
       </div>
     </form>
+  </dialog>
+
+  <dialog id="picker">
+    <div class="dlg-head">
+      <strong style="flex:1">Pick a point</strong>
+      <button type="button" class="ghost" id="pick-refresh">Refresh map</button>
+    </div>
+    <div class="dlg-body">
+      <div id="pick-wrap" class="pick-wrap">
+        <img id="pick-img" alt="Vacuum map">
+        <div id="pick-dot" class="pick-dot" hidden></div>
+      </div>
+      <p class="hint" id="pick-readout">Click the map to choose a point.</p>
+      <p class="err" id="pick-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="pick-cancel">Cancel</button>
+      <button type="button" class="primary" id="pick-select" disabled>Select</button>
+    </div>
   </dialog>
 
   <dialog id="exporter">
@@ -260,6 +287,9 @@
             <button type="button" class="danger" data-rm="${i}">Remove</button>
           </div>
           ${fields ? `<div class="grid2">${fields}</div>` : `<p class="hint">${esc(spec.help)}</p>`}
+          ${step.type === "go_to_point"
+            ? `<div class="bar" style="margin:10px 0 0"><button type="button"
+                 data-pick="${i}">Pick from map</button></div>` : ""}
         </div>`;
       }).join("") || `<p class="hint">No steps yet. Add one below.</p>`;
     }
@@ -287,6 +317,63 @@
         else step[input.dataset.field] = value;
       }
       return stepsState;
+    }
+
+    let mapMeta = null, pickStep = null, picked = null;
+
+    function stepDid() { return $("t-did").value; }
+
+    async function openPicker(index) {
+      pickStep = index; picked = null;
+      $("pick-dot").hidden = true;
+      $("pick-select").disabled = true;
+      $("pick-err").hidden = true;
+      $("pick-readout").textContent = "Loading map...";
+      $("picker").showModal();
+      await loadMap(false);
+    }
+
+    async function loadMap(refresh) {
+      const did = stepDid();
+      if (!did) return pickFail("Choose a vacuum for this task first.");
+      $("pick-readout").textContent = refresh ? "Asking the vacuum for a fresh map..." : "Loading map...";
+      const res = await fetch(`${BASE}/api/map/${did}${refresh ? "?refresh=1" : ""}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return pickFail(body.error || "No map available yet.");
+      mapMeta = body.meta;
+      // Cache-bust so a refreshed map is actually shown.
+      $("pick-img").src = `${BASE}/map/${did}.png?v=${mapMeta.updated_at || Date.now()}`;
+      $("pick-err").hidden = true;
+      $("pick-readout").textContent = "Click the map to choose a point.";
+    }
+
+    function pickFail(message) {
+      $("pick-err").textContent = message;
+      $("pick-err").hidden = false;
+      $("pick-readout").textContent = "";
+    }
+
+    function onMapClick(event) {
+      if (!mapMeta) return;
+      const img = $("pick-img");
+      const rect = img.getBoundingClientRect();
+      // The image is displayed at whatever width fits, so translate the click
+      // into the rendered image's own pixels before converting to millimetres.
+      const ratio = img.naturalWidth / rect.width;
+      const px = (event.clientX - rect.left) * ratio;
+      const py = (event.clientY - rect.top) * ratio;
+      const [ox, oy] = mapMeta.origin;
+      const grid = mapMeta.grid_size, scale = mapMeta.scale || 1;
+      picked = {
+        x: Math.round(ox + (px / scale + 0.5) * grid),
+        y: Math.round(oy + (py / scale + 0.5) * grid),
+      };
+      const dot = $("pick-dot");
+      dot.style.left = `${event.clientX - rect.left}px`;
+      dot.style.top = `${event.clientY - rect.top}px`;
+      dot.hidden = false;
+      $("pick-select").disabled = false;
+      $("pick-readout").textContent = `x ${picked.x}, y ${picked.y} (millimetres)`;
     }
 
     async function save() {
@@ -364,6 +451,7 @@
       }
     });
 
+    $("pick-img").addEventListener("click", onMapClick);
     load();
   </script>
 </body>
