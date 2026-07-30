@@ -4,3 +4,4 @@ requests
 paho-mqtt
 pycryptodome
 python-miio
+pyyaml

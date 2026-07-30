@@ -129,7 +129,7 @@
           </div>
         </div>
         <div id="view-yaml" hidden>
-          <p class="hint">The task as data. Edits here apply when you save.</p>
+          <p class="hint">The task's steps as YAML. Edits here apply when you save.</p>
           <textarea id="t-yaml" spellcheck="false"></textarea>
         </div>
         <p class="err" id="dlg-err" hidden></p>
@@ -237,7 +237,13 @@
         b.setAttribute("aria-pressed", String(b.dataset.view === next));
       $("view-ui").hidden = next !== "ui";
       $("view-yaml").hidden = next !== "yaml";
-      if (next === "yaml") $("t-yaml").value = JSON.stringify(stepsState, null, 2);
+      if (next === "yaml") {
+        collectFromUi();
+        fetch(`${BASE}/api/tasks/yaml`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({steps: stepsState}),
+        }).then(r => r.json()).then(b => { $("t-yaml").value = b.yaml || ""; });
+      }
     }
 
     function collectFromUi() {
@@ -253,8 +259,13 @@
     async function save() {
       let steps;
       if (view === "yaml") {
-        try { steps = JSON.parse($("t-yaml").value); }
-        catch (err) { return fail("That is not valid JSON: " + err.message); }
+        const res = await fetch(`${BASE}/api/tasks/yaml`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({yaml: $("t-yaml").value}),
+        });
+        const parsed = await res.json();
+        if (!res.ok) return fail(parsed.error || "Could not read that YAML");
+        steps = parsed.steps;
       } else {
         steps = collectFromUi();
       }
@@ -302,7 +313,9 @@
       } else if (t.dataset.run) {
         t.disabled = true; t.textContent = "Running...";
         const res = await fetch(`${BASE}/api/tasks/${t.dataset.run}/run`, {method: "POST"});
-        t.textContent = res.ok ? "Started" : "Failed";
+        const body = await res.json().catch(() => ({}));
+        t.textContent = res.ok ? "Done" : "Failed";
+        if (!res.ok && body.error) alert(body.error);
         setTimeout(() => { t.disabled = false; t.textContent = "Run"; }, 2500);
       } else if (t.dataset.export) {
         const res = await fetch(`${BASE}/api/tasks/${t.dataset.export}/export`);

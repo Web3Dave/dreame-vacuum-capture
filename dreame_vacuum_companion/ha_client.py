@@ -72,16 +72,38 @@ def get_states(entity_ids: list[str]) -> dict[str, dict]:
 
 
 def call_service(domain: str, service: str, data: dict | None = None) -> bool:
+    return call_service_result(domain, service, data)[0]
+
+
+def call_service_result(
+    domain: str, service: str, data: dict | None = None
+) -> tuple[bool, str]:
+    """Call a service and return why it failed, not just that it did.
+
+    Home Assistant's reason is the useful part - "Service not found" means the
+    integration needs updating, which is invisible if the caller only sees a
+    boolean.
+    """
     try:
         r = requests.post(
             f"{SUPERVISOR_CORE}/services/{domain}/{service}",
             headers=_headers(),
             data=json.dumps(data or {}),
-            timeout=20,
+            timeout=120,
         )
-        return r.status_code in (200, 201)
-    except (requests.RequestException, HomeAssistantUnavailable):
-        return False
+        if r.status_code in (200, 201):
+            return True, ""
+        detail = (r.text or "").strip()
+        if r.status_code == 400 and "not found" in detail.lower():
+            detail = (
+                f"Home Assistant has no {domain}.{service} service. "
+                "Update the integration and restart Home Assistant."
+            )
+        return False, detail[:300] or f"HTTP {r.status_code}"
+    except requests.RequestException as err:
+        return False, f"Could not reach Home Assistant: {err}"
+    except HomeAssistantUnavailable as err:
+        return False, str(err)
 
 
 def discover_by_platform(platform: str = "dreame_vacuum_core") -> list[dict]:

@@ -19,6 +19,8 @@ import os
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
 import ha_client
+import yaml
+
 import steps as step_schema
 import store
 
@@ -157,6 +159,35 @@ def api_tasks():
     })
 
 
+@app.route("/api/tasks/yaml", methods=["POST"])
+def api_steps_yaml():
+    """Convert between steps and the YAML the editor shows.
+
+    Round-tripped here rather than in the browser so both directions use the
+    same validator the save path does - a YAML view that accepts something
+    the save rejects would be worse than no YAML view.
+    """
+    body = request.get_json(silent=True) or {}
+    if "yaml" in body:
+        try:
+            parsed = yaml.safe_load(body["yaml"]) or []
+        except yaml.YAMLError as err:
+            return jsonify({"error": f"Not valid YAML: {err}"}), 400
+        try:
+            return jsonify({"steps": step_schema.validate_steps(parsed)})
+        except step_schema.StepError as err:
+            return jsonify({"error": str(err)}), 400
+    # type leads each step: it decides what the other keys mean, so reading it
+    # third is needlessly hard.
+    ordered = [
+        {"type": step.get("type"), **{k: v for k, v in step.items() if k != "type"}}
+        for step in (body.get("steps") or [])
+    ]
+    return jsonify({
+        "yaml": yaml.safe_dump(ordered, sort_keys=False, default_flow_style=False)
+    })
+
+
 @app.route("/api/tasks", methods=["POST"])
 def api_save_task():
     body = request.get_json(silent=True) or {}
@@ -215,10 +246,10 @@ def api_run_task(slug):
     # Runs through the integration rather than firing the steps from here, so
     # a run started in the UI is narrated and guarded exactly like one started
     # from an automation.
-    ok = ha_client.call_service(
+    ok, detail = ha_client.call_service_result(
         "dreame_vacuum_core", "start_task", {"entity_id": vacuum, "task": slug}
     )
-    return jsonify({"success": ok}), (200 if ok else 502)
+    return jsonify({"success": ok, "error": detail}), (200 if ok else 502)
 
 
 def _script_yaml(task, calls):
