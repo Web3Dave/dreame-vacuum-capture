@@ -901,7 +901,16 @@ def task_calls(slug):
 def start_run():
     """Open a run. Steps stream in against the returned id while it works."""
     body = _require_body("did", "command")
-    return jsonify({"success": True, "id": store.start_run(body["did"], body["command"])})
+    return jsonify({
+        "success": True,
+        "id": store.start_run(body["did"], body["command"], body.get("run_uid")),
+    })
+
+
+@app.route("/runs/reconcile", methods=["POST"])
+def reconcile_runs():
+    body = request.get_json(silent=True) or {}
+    return jsonify({"success": True, "closed": store.close_orphaned_runs(body.get("did"))})
 
 
 @app.route("/runs/<int:run_id>/steps", methods=["POST"])

@@ -54,7 +54,9 @@ CREATE TABLE IF NOT EXISTS runs (
     ok       INTEGER NOT NULL,
     at       INTEGER NOT NULL,
     summary  TEXT,
-    detail   TEXT            -- json: {"trace": [...], "error": "...", ...}
+    detail   TEXT,           -- json: {"trace": [...], "error": "...", ...}
+    run_uid  TEXT            -- the integration's id for this run, so the
+                             -- vacuum's live state and this row agree
 );
 
 CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
@@ -97,9 +99,21 @@ def _connect() -> sqlite3.Connection:
     return conn
 
 
+# Columns added after a release. CREATE TABLE IF NOT EXISTS does nothing to a
+# table that already exists, so an upgrade needs these applied explicitly -
+# without them the first insert against an older database fails.
+MIGRATIONS = [
+    ("runs", "run_uid", "ALTER TABLE runs ADD COLUMN run_uid TEXT"),
+]
+
+
 def init() -> None:
     with _lock, _connect() as conn:
         conn.executescript(SCHEMA)
+        for table, column, statement in MIGRATIONS:
+            existing = {row[1] for row in conn.execute(f"PRAGMA table_info({table})")}
+            if column not in existing:
+                conn.execute(statement)
 
 
 def register_devices(entry_id: str, devices: list[dict]) -> int:
@@ -202,12 +216,13 @@ def delete_route(route_id: int) -> None:
 RUN_HISTORY = 200
 
 
-def start_run(did, command):
+def start_run(did, command, run_uid=None):
     """Open a run and return its id. Steps and an outcome follow."""
     with _lock, _connect() as db:
         cur = db.execute(
-            "INSERT INTO runs (did, command, ok, at, summary, detail) VALUES (?,?,?,?,?,?)",
-            (str(did), str(command), -1, int(time.time()), None, "{}"),
+            "INSERT INTO runs (did, command, ok, at, summary, detail, run_uid) "
+            "VALUES (?,?,?,?,?,?,?)",
+            (str(did), str(command), -1, int(time.time()), None, "{}", run_uid),
         )
         run_id = cur.lastrowid
         db.execute(
@@ -256,7 +271,7 @@ def add_run(did, command, ok, summary, detail):
 
 
 def list_runs(did=None, limit=50):
-    query = "SELECT id, did, command, ok, at, summary, detail FROM runs"
+    query = "SELECT id, did, command, ok, at, summary, detail, run_uid FROM runs"
     params = []
     if did:
         query += " WHERE did = ?"
@@ -281,6 +296,7 @@ def list_runs(did=None, limit=50):
                 "ok": None if row[3] == -1 else bool(row[3]),
                 "running": row[3] == -1,
                 "at": row[4], "summary": row[5], "detail": detail,
+                "run_uid": row[7],
                 "steps": [{"at": s_at, "text": s_text} for s_at, s_text in steps],
             })
     return out
@@ -340,3 +356,19 @@ def _task_row(row):
         "slug": row[0], "did": row[1], "name": row[2], "steps": steps,
         "created_at": row[4], "updated_at": row[5],
     }
+
+
+def close_orphaned_runs(did=None, summary="Abandoned - Home Assistant restarted"):
+    """Close runs still marked in progress.
+
+    Only the integration can know an errand ended, and it calls this at
+    startup. Without it a row stays 'running' forever and a task looks
+    permanently busy.
+    """
+    query = "UPDATE runs SET ok = 0, summary = COALESCE(summary, ?) WHERE ok = -1"
+    params = [summary]
+    if did:
+        query += " AND did = ?"
+        params.append(str(did))
+    with _lock, _connect() as db:
+        return db.execute(query, params).rowcount
