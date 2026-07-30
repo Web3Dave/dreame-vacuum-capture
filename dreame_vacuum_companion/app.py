@@ -30,6 +30,10 @@ GET  /runs?did=&limit=
 GET  /snapshots?tag=&limit=
                     -> what has been captured, newest first
 GET  /snapshots/<tag>/<file>
+POST /map           multipart: did, meta (json), image (png)
+                    -> the rendered map used to pick coordinates
+GET  /map/<did>     -> geometry: origin, grid_size, scale, size
+GET  /map/<did>.png
 GET  /health        (no auth - liveness only)
 """
 import hashlib
@@ -826,6 +830,51 @@ def snapshot_file(tag, filename):
     if not os.path.exists(path):
         abort(404, "No such snapshot")
     return send_file(path, mimetype="image/jpeg")
+
+
+MAP_ROOT = os.path.join(MEDIA_ROOT, "maps")
+
+
+@app.route("/map", methods=["POST"])
+def put_map():
+    """Store a rendered map and its geometry, uploaded by the integration.
+
+    Kept as a file plus a JSON sidecar rather than in the database: it is an
+    image, and the media folder is already where images live.
+    """
+    did = request.form.get("did")
+    image = request.files.get("image")
+    if not did or image is None:
+        abort(400, "did and image are required")
+    try:
+        meta = json.loads(request.form.get("meta") or "{}")
+    except ValueError:
+        abort(400, "meta is not valid JSON")
+
+    os.makedirs(MAP_ROOT, exist_ok=True)
+    safe = _safe_tag(did)
+    image.save(os.path.join(MAP_ROOT, f"{safe}.png"))
+    meta["updated_at"] = int(time.time())
+    with open(os.path.join(MAP_ROOT, f"{safe}.json"), "w") as handle:
+        json.dump(meta, handle)
+    return jsonify({"success": True, "meta": meta})
+
+
+@app.route("/map/<did>", methods=["GET"])
+def get_map_meta(did):
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.json")
+    if not os.path.exists(path):
+        abort(404, "No map has been published for this vacuum yet")
+    with open(path) as handle:
+        return jsonify({"meta": json.load(handle)})
+
+
+@app.route("/map/<did>.png", methods=["GET"])
+def get_map_image(did):
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.png")
+    if not os.path.exists(path):
+        abort(404, "No map has been published for this vacuum yet")
+    return send_file(path, mimetype="image/png")
 
 
 @app.route("/tasks", methods=["GET"])

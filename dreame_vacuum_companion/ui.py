@@ -12,10 +12,10 @@ route editing goes here next.
 """
 from __future__ import annotations
 
+import json
 import os
 import time
 
-import os
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
@@ -132,6 +132,40 @@ def api_service():
         return jsonify({"error": "domain and service are required"}), 400
     ok = ha_client.call_service(domain, service, body.get("data") or {})
     return jsonify({"success": ok}), (200 if ok else 502)
+
+
+MAP_ROOT = "/media/dreame-capture/maps"
+
+
+@app.route("/api/map/<did>")
+def api_map(did):
+    """Geometry for the picker, refreshing the image first if asked.
+
+    The refresh goes through the integration: it is the only side that can
+    fetch a frame from the vacuum.
+    """
+    if request.args.get("refresh"):
+        device = store.get_device(did) or {}
+        entity = (device.get("entities") or {}).get("vacuum")
+        if entity:
+            ok, detail = ha_client.call_service_result(
+                "dreame_vacuum_core", "publish_map", {"entity_id": entity}
+            )
+            if not ok:
+                return jsonify({"error": detail or "Could not refresh the map"}), 502
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.json")
+    if not os.path.exists(path):
+        return jsonify({"error": "No map yet - try Refresh"}), 404
+    with open(path) as handle:
+        return jsonify({"meta": json.load(handle)})
+
+
+@app.route("/map/<did>.png")
+def map_image(did):
+    path = os.path.join(MAP_ROOT, f"{_safe_tag(did)}.png")
+    if not os.path.exists(path):
+        abort(404)
+    return send_file(path, mimetype="image/png")
 
 
 @app.route("/tasks")
