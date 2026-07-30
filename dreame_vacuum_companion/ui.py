@@ -139,10 +139,54 @@ def tasks():
     return render_template("tasks.html", base=_ingress_base(), viewer=_viewer(), page="tasks")
 
 
+def _busy_by_device():
+    """What each vacuum is doing, from the integration's own live state.
+
+    Read from Home Assistant rather than tracked here: the integration
+    performs the errands, so it is the only thing that actually knows. A
+    vacuum we cannot read is reported as not busy - refusing to let someone
+    press Run because the API is briefly unavailable would be worse than
+    letting the integration refuse it properly.
+    """
+    busy = {}
+    for device in store.list_devices():
+        entity = (device.get("entities") or {}).get("vacuum")
+        if not entity:
+            continue
+        state = ha_client.get_state(entity)
+        attrs = (state or {}).get("attributes") or {}
+        busy[device["did"]] = {
+            "running": bool(attrs.get("task_running")),
+            "task": attrs.get("task_id"),
+            "run_id": attrs.get("task_run_id"),
+            "command": attrs.get("task_command"),
+            "step": attrs.get("task_step"),
+            "steps": attrs.get("task_steps"),
+            "detail": attrs.get("task_detail"),
+            "vacuum": entity,
+            "name": device.get("name") or device["did"],
+        }
+    return busy
+
+
 @app.route("/api/tasks", methods=["GET"])
 def api_tasks():
+    busy = _busy_by_device()
+    tasks = store.list_tasks()
+    for task in tasks:
+        state = busy.get(task["did"]) or {}
+        # Two different reasons a task cannot start: it is itself running, or
+        # its vacuum is busy with something else. The UI says which.
+        task["running"] = bool(state.get("running") and state.get("task") == task["slug"])
+        task["device_busy"] = bool(state.get("running")) and not task["running"]
+        task["busy_with"] = state.get("task") or state.get("command") if task["device_busy"] else None
+        task["progress"] = (
+            {"step": state.get("step"), "steps": state.get("steps"),
+             "detail": state.get("detail"), "run_id": state.get("run_id")}
+            if task["running"] else None
+        )
     return jsonify({
-        "tasks": store.list_tasks(),
+        "tasks": tasks,
         "devices": [
             {"did": d["did"], "name": d.get("name") or d["did"]}
             for d in store.list_devices()

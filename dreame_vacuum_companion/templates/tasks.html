@@ -87,6 +87,16 @@
     .err { color:var(--bad); font-size:13px; margin:8px 0 0; }
     .tabs { display:flex; gap:6px; }
     .tabs button[aria-pressed="true"] { background:var(--text); color:var(--bg); border-color:var(--text); }
+    .task.live { border-color:var(--accent); }
+    .pill.run-live { color:var(--accent); border-color:var(--accent); }
+    .pill.run-live::before { content:""; display:inline-block; width:6px; height:6px;
+      border-radius:50%; background:var(--accent); margin-right:6px; vertical-align:1px;
+      animation:pulse 1.4s ease-in-out infinite; }
+    @keyframes pulse { 0%,100% { opacity:1 } 50% { opacity:.25 } }
+    @media (prefers-reduced-motion:reduce) { .pill.run-live::before { animation:none } }
+    .task ol li.at { color:var(--text); font-weight:600; }
+    .task ol li.at::marker { color:var(--accent); }
+    button[disabled] { opacity:.55; cursor:not-allowed; }
     pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
   </style>
@@ -157,6 +167,7 @@
   <script>
     const BASE = "{{ base }}";
     let schema = {}, devices = [], tasks = [], editing = null, view = "ui", stepsState = [];
+    let timer = null;
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
       ({"&":"&amp;","<":"&lt;","}":"&gt;",">":"&gt;","\"":"&quot;"}[c] || c));
@@ -166,6 +177,11 @@
       const body = await res.json();
       schema = body.step_types; devices = body.devices; tasks = body.tasks;
       renderList();
+      // Poll only while something is running: the rest of the time this page
+      // is static and polling would be noise.
+      const active = tasks.some(t => t.running || t.device_busy);
+      clearTimeout(timer);
+      if (active) timer = setTimeout(load, 2000);
     }
 
     function renderList() {
@@ -176,18 +192,35 @@
           &mdash; drive somewhere, face a direction, photograph it.</p></div>`;
         return;
       }
-      $("list").innerHTML = tasks.map(t => `
-        <div class="task">
+      $("list").innerHTML = tasks.map(t => {
+        const p = t.progress || {};
+        const runLabel = t.running
+          ? (p.step && p.steps ? `Running ${p.step}/${p.steps}` : "Running")
+          : t.device_busy ? "Vacuum busy" : "Run";
+        const disabled = t.running || t.device_busy ? " disabled" : "";
+        const title = t.device_busy
+          ? `Busy with ${t.busy_with || "another errand"}` : "";
+        return `
+        <div class="task${t.running ? " live" : ""}">
           <div class="task-head">
             <h2>${esc(t.name)}</h2><span class="slug">${esc(t.slug)}</span>
+            ${t.running ? '<span class="pill run-live">running</span>' : ""}
             <span class="spacer"></span>
-            <button type="button" class="primary" data-run="${esc(t.slug)}">Run</button>
+            <button type="button" class="primary" data-run="${esc(t.slug)}"${disabled}
+                    title="${esc(title)}">${esc(runLabel)}</button>
             <button type="button" data-edit="${esc(t.slug)}">Edit</button>
             <button type="button" data-export="${esc(t.slug)}">Export</button>
-            <button type="button" class="danger" data-del="${esc(t.slug)}">Delete</button>
+            <button type="button" class="danger" data-del="${esc(t.slug)}"${disabled}>Delete</button>
           </div>
-          <ol>${t.steps.map(s => `<li>${esc(describe(s))}</li>`).join("")}</ol>
-        </div>`).join("");
+          <ol>${t.steps.map((s, i) => {
+            const at = t.running && p.step === i + 1;
+            return `<li${at ? ' class="at"' : ""}>${esc(describe(s))}</li>`;
+          }).join("")}</ol>
+          ${t.running && p.run_id
+            ? `<p class="hint">Run ${esc(p.run_id)}${p.detail ? " &middot; " + esc(p.detail) : ""}
+               &middot; <a href="${BASE}/activity">follow in Activity</a></p>` : ""}
+        </div>`;
+      }).join("");
     }
 
     function describe(step) {
@@ -311,12 +344,14 @@
         await fetch(`${BASE}/api/tasks/${t.dataset.del}`, {method: "DELETE"});
         load();
       } else if (t.dataset.run) {
-        t.disabled = true; t.textContent = "Running...";
+        t.disabled = true; t.textContent = "Starting...";
+        // Poll straight away so the button reflects the run rather than
+        // waiting for it to finish - an errand takes minutes.
+        setTimeout(load, 800);
         const res = await fetch(`${BASE}/api/tasks/${t.dataset.run}/run`, {method: "POST"});
         const body = await res.json().catch(() => ({}));
-        t.textContent = res.ok ? "Done" : "Failed";
         if (!res.ok && body.error) alert(body.error);
-        setTimeout(() => { t.disabled = false; t.textContent = "Run"; }, 2500);
+        load();
       } else if (t.dataset.export) {
         const res = await fetch(`${BASE}/api/tasks/${t.dataset.export}/export`);
         const body = await res.json();
