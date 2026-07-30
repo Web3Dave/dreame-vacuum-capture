@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dreame Companion</title>
+  <title>Activity - Dreame Companion</title>
   <style>
     :root {
       --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
@@ -34,86 +34,75 @@
     code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px;
            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
     footer { margin-top:28px; color:var(--muted); font-size:12px; }
+    .todo { margin-top:24px; }
+    .todo ul { margin:8px 0 0; padding-left:20px; }
+    .todo li { margin:3px 0; }
+  </style>
+
+  <style>
     nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
     nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
             border-bottom:2px solid transparent; margin-bottom:-1px; }
     nav a:hover { color:var(--text); }
     nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
-    .todo { margin-top:24px; }
-    .todo ul { margin:8px 0 0; padding-left:20px; }
-    .todo li { margin:3px 0; }
+    .run { background:var(--card); border:1px solid var(--line); border-radius:12px;
+           padding:14px 16px; margin-bottom:10px; }
+    .run-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .run-head .cmd { font-weight:600; }
+    .run-head time { color:var(--muted); font-size:12px; font-variant-numeric:tabular-nums; }
+    .run .summary { margin:6px 0 0; font-size:14px; }
+    .run pre { margin:10px 0 0; padding:10px 12px; background:rgba(127,127,127,.10);
+               border-radius:8px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+               font-size:12.5px; line-height:1.65; overflow-x:auto; white-space:pre; }
+    .run .err { color:var(--bad); font-size:13px; margin:6px 0 0; }
   </style>
+
 </head>
 <body>
   <header>
     <h1>Dreame Companion</h1>
-    {% if ha_up %}
-      <span class="pill ok">Home Assistant connected</span>
-    {% else %}
-      <span class="pill bad">Home Assistant API unavailable</span>
-    {% endif %}
     {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
   </header>
 
   <nav>
-    <a href="{{ base }}/" aria-current="page">Devices</a>
-    <a href="{{ base }}/activity">Activity</a>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/activity" aria-current="page">Activity</a>
   </nav>
 
-  {% if devices %}
-    <div class="grid">
-      {% for dev in devices %}
-        <div class="card">
-          <h2>{{ dev.name or dev.did }}</h2>
-          <div class="model">{{ dev.model or 'unknown model' }} &middot; did {{ dev.did }}</div>
-          {% if dev.state %}
-            <table>
-              {% for role, s in dev.state.items() %}
-                <tr>
-                  <td>{{ role }}</td>
-                  <td>
-                    {{ s.state }}
-                    {% if s.attributes.battery_level is defined %}
-                      &middot; {{ s.attributes.battery_level }}%
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
-            </table>
-          {% elif dev.entities %}
-            <table>
-              {% for role, eid in dev.entities.items() %}
-                <tr><td>{{ role }}</td><td><code>{{ eid }}</code></td></tr>
-              {% endfor %}
-            </table>
-            <p class="sub" style="margin-bottom:0">State unavailable &mdash; check the Home Assistant API connection.</p>
+  {% if runs %}
+    {% for run in runs %}
+      <div class="run">
+        <div class="run-head">
+          <span class="cmd">{{ run.command }}</span>
+          {% if run.ok %}
+            <span class="pill ok">ok</span>
           {% else %}
-            <p class="sub" style="margin-bottom:0">No entities reported.</p>
+            <span class="pill bad">failed</span>
           {% endif %}
+          <time datetime="{{ run.at }}" data-ts="{{ run.at }}">{{ run.at }}</time>
         </div>
-      {% endfor %}
-    </div>
+        {% if run.summary %}<p class="summary">{{ run.summary }}</p>{% endif %}
+        {% if run.detail.error %}<p class="err">{{ run.detail.error }}</p>{% endif %}
+        {% if run.detail.trace %}<pre>{{ run.detail.trace | join('\n') }}</pre>{% endif %}
+      </div>
+    {% endfor %}
   {% else %}
     <div class="empty">
-      <p style="margin-top:0"><strong>No devices registered yet.</strong></p>
-      <p>Install and configure the <code>dreame_vacuum_core</code> integration.
-         It registers its devices with this add-on on startup.</p>
+      <p style="margin:0 0 6px"><strong>Nothing recorded yet</strong></p>
+      <p style="margin:0">Runs appear here after the integration performs an errand &mdash;
+      <code>inspect_point</code> or <code>rotate_to_heading</code>.</p>
     </div>
   {% endif %}
 
-  <div class="todo card">
-    <strong>Not built yet</strong>
-    <ul>
-      <li>Patrol / security route editor (routes are already persisted in SQLite)</li>
-      <li>Live camera view via the RTSP feed</li>
-      <li>Sound playback &mdash; <code>siid 7 / aiid 2 / piid 4</code></li>
-      <li>Closed-loop <em>rotate to heading</em> (pose feedback is ~0.4&nbsp;Hz, so step&rarr;settle&rarr;measure)</li>
-    </ul>
-  </div>
+  <footer>Showing the {{ runs | length }} most recent {% if runs %}of up to 200 kept{% endif %}.</footer>
 
-  <footer>
-    {{ devices|length }} device(s) &middot; {{ routes|length }} route(s) &middot;
-    control flows through Home Assistant, which remains the source of truth for vacuum state.
-  </footer>
+  <script>
+    // Timestamps are stored as unix seconds; render them in the viewer's zone.
+    for (const el of document.querySelectorAll('time[data-ts]')) {
+      const d = new Date(Number(el.dataset.ts) * 1000);
+      el.textContent = d.toLocaleString();
+      el.setAttribute('datetime', d.toISOString());
+    }
+  </script>
 </body>
 </html>

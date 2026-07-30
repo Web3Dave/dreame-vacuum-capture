@@ -20,6 +20,9 @@ POST /stream/stop   {did}
                     -> tears down a stream started above
 GET  /stream/status?did=...
 GET  /latest.jpg?did=...
+POST /runs          {did, command, ok, summary, detail}
+                    -> records an errand for the UI's Activity page
+GET  /runs?did=&limit=
 GET  /health        (no auth - liveness only)
 """
 import hashlib
@@ -725,6 +728,27 @@ def register():
 @app.route("/registered", methods=["GET"])
 def registered():
     return jsonify({"devices": store.list_devices()})
+
+
+@app.route("/runs", methods=["POST"])
+def add_run():
+    """Record what an errand did, for the UI's Activity page.
+
+    Posted by the integration, which is the only thing that knows how a
+    multi-step command actually went.
+    """
+    body = _require_body("did", "command")
+    store.add_run(
+        body["did"], body["command"], bool(body.get("ok")),
+        body.get("summary"), body.get("detail"),
+    )
+    return jsonify({"success": True})
+
+
+@app.route("/runs", methods=["GET"])
+def get_runs():
+    return jsonify({"runs": store.list_runs(request.args.get("did"),
+                                            int(request.args.get("limit", 50)))})
 
 
 @app.route("/health", methods=["GET"])

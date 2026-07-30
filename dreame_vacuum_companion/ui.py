@@ -90,6 +90,21 @@ def api_service():
     return jsonify({"success": ok}), (200 if ok else 502)
 
 
+@app.route("/activity")
+def activity():
+    return render_template(
+        "activity.html",
+        base=_ingress_base(),
+        viewer=_viewer(),
+        runs=store.list_runs(limit=50),
+    )
+
+
+@app.route("/api/runs")
+def api_runs():
+    return jsonify({"runs": store.list_runs(request.args.get("did"), 50)})
+
+
 @app.route("/health")
 def health():
     return jsonify({"status": "ok", "devices": len(store.list_devices()), "ha": ha_client.available()})

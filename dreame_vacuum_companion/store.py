@@ -42,6 +42,22 @@ CREATE TABLE IF NOT EXISTS routes (
 );
 
 CREATE INDEX IF NOT EXISTS idx_routes_did ON routes(did);
+
+-- What happened on each errand the integration ran. Kept here rather than only
+-- in Home Assistant's log because a robot in another room is much easier to
+-- debug from a page than from a log file, and the trace is short-lived
+-- information that does not belong in the recorder database.
+CREATE TABLE IF NOT EXISTS runs (
+    id       INTEGER PRIMARY KEY AUTOINCREMENT,
+    did      TEXT NOT NULL,
+    command  TEXT NOT NULL,
+    ok       INTEGER NOT NULL,
+    at       INTEGER NOT NULL,
+    summary  TEXT,
+    detail   TEXT            -- json: {"trace": [...], "error": "...", ...}
+);
+
+CREATE INDEX IF NOT EXISTS idx_runs_at ON runs(at DESC);
 """
 
 
@@ -151,3 +167,46 @@ def save_route(did: str, name: str, waypoints: list[dict], route_id: int | None 
 def delete_route(route_id: int) -> None:
     with _lock, _connect() as conn:
         conn.execute("DELETE FROM routes WHERE id = ?", (route_id,))
+
+
+# -- runs -----------------------------------------------------------------
+RUN_HISTORY = 200
+
+
+def add_run(did, command, ok, summary, detail):
+    """Record one errand. Trimmed to the most recent RUN_HISTORY rows so this
+    cannot grow without bound on a device that patrols on a schedule."""
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT INTO runs (did, command, ok, at, summary, detail) VALUES (?,?,?,?,?,?)",
+            (str(did), str(command), 1 if ok else 0, int(time.time()),
+             summary, json.dumps(detail or {})),
+        )
+        db.execute(
+            "DELETE FROM runs WHERE id NOT IN "
+            "(SELECT id FROM runs ORDER BY at DESC, id DESC LIMIT ?)",
+            (RUN_HISTORY,),
+        )
+
+
+def list_runs(did=None, limit=50):
+    query = "SELECT id, did, command, ok, at, summary, detail FROM runs"
+    params = []
+    if did:
+        query += " WHERE did = ?"
+        params.append(str(did))
+    query += " ORDER BY at DESC, id DESC LIMIT ?"
+    params.append(int(limit))
+    with _lock, _connect() as db:
+        rows = db.execute(query, params).fetchall()
+    out = []
+    for row in rows:
+        try:
+            detail = json.loads(row[6] or "{}")
+        except ValueError:
+            detail = {}
+        out.append({
+            "id": row[0], "did": row[1], "command": row[2], "ok": bool(row[3]),
+            "at": row[4], "summary": row[5], "detail": detail,
+        })
+    return out
