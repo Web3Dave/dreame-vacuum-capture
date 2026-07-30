@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tasks - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    .pill { font-size:12px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+    .pill.ok { color:var(--ok); border-color:var(--ok); }
+    .pill.bad { color:var(--bad); border-color:var(--bad); }
+    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .card h2 { font-size:16px; margin:0 0 2px; font-weight:600; }
+    .model { color:var(--muted); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }
+    td { padding:5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+    td:first-child { color:var(--muted); width:38%; }
+    td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+    .empty { background:var(--card); border:1px dashed var(--line); border-radius:12px;
+             padding:28px; text-align:center; color:var(--muted); }
+    code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px;
+           font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    footer { margin-top:28px; color:var(--muted); font-size:12px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .todo { margin-top:24px; }
+    .todo ul { margin:8px 0 0; padding-left:20px; }
+    .todo li { margin:3px 0; }
+  </style>
+  <style>
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; }
+    button.danger { color:var(--bad); border-color:var(--bad); }
+    button:hover { filter:brightness(1.06); }
+    button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    .task { background:var(--card); border:1px solid var(--line); border-radius:12px;
+            padding:14px 16px; margin-bottom:10px; }
+    .task-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .task-head h2 { font-size:16px; margin:0; }
+    .task-head .slug { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                       font-size:12px; color:var(--muted); }
+    .task-head .spacer { flex:1; }
+    .task ol { margin:10px 0 0; padding-left:22px; color:var(--muted); font-size:13.5px; }
+    .task ol li { margin:2px 0; }
+    dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
+             color:var(--text); padding:0; width:min(680px,94vw); }
+    dialog::backdrop { background:rgba(0,0,0,.45); }
+    .dlg-head, .dlg-foot { padding:14px 18px; display:flex; gap:10px; align-items:center; }
+    .dlg-head { border-bottom:1px solid var(--line); }
+    .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .dlg-body { padding:16px 18px; max-height:64vh; overflow-y:auto; }
+    label.field { display:block; margin-bottom:12px; font-size:13px; color:var(--muted); }
+    label.field span { display:block; margin-bottom:4px; }
+    input, select, textarea { font:inherit; font-size:14px; width:100%; padding:8px 10px;
+      border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+    textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+               min-height:300px; white-space:pre; }
+    .step { border:1px solid var(--line); border-radius:10px; padding:12px; margin-bottom:10px; }
+    .step-head { display:flex; gap:8px; align-items:center; margin-bottom:8px; }
+    .step-head strong { flex:1; font-size:14px; }
+    .grid2 { display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; }
+    .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
+    .err { color:var(--bad); font-size:13px; margin:8px 0 0; }
+    .tabs { display:flex; gap:6px; }
+    .tabs button[aria-pressed="true"] { background:var(--text); color:var(--bg); border-color:var(--text); }
+    pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
+      font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks"{% if page == 'tasks' %} aria-current="page"{% endif %}>Tasks</a>
+    <a href="{{ base }}/snapshots"{% if page == 'snapshots' %} aria-current="page"{% endif %}>Snapshots</a>
+    <a href="{{ base }}/activity"{% if page == 'activity' %} aria-current="page"{% endif %}>Activity</a>
+  </nav>
+
+  <div class="bar">
+    <button class="primary" id="new">New task</button>
+    <span class="sub" id="count"></span>
+  </div>
+  <div id="list"></div>
+
+  <dialog id="editor">
+    <form method="dialog" onsubmit="return false">
+      <div class="dlg-head">
+        <strong style="flex:1" id="dlg-title">Task</strong>
+        <div class="tabs">
+          <button type="button" data-view="ui" aria-pressed="true">Steps</button>
+          <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
+        </div>
+      </div>
+      <div class="dlg-body">
+        <div id="view-ui">
+          <label class="field"><span>Name</span><input id="t-name" placeholder="Poop check"></label>
+          <label class="field"><span>Vacuum</span><select id="t-did"></select></label>
+          <div id="steps"></div>
+          <div class="bar" style="margin:12px 0 0">
+            <select id="add-type" style="max-width:240px"></select>
+            <button type="button" id="add-step">Add step</button>
+          </div>
+        </div>
+        <div id="view-yaml" hidden>
+          <p class="hint">The task as data. Edits here apply when you save.</p>
+          <textarea id="t-yaml" spellcheck="false"></textarea>
+        </div>
+        <p class="err" id="dlg-err" hidden></p>
+      </div>
+      <div class="dlg-foot">
+        <button type="button" class="ghost" id="cancel">Cancel</button>
+        <button type="button" class="primary" id="save">Save</button>
+      </div>
+    </form>
+  </dialog>
+
+  <dialog id="exporter">
+    <div class="dlg-head"><strong style="flex:1">Export to Home Assistant</strong></div>
+    <div class="dlg-body">
+      <p class="hint">Paste into <code>scripts.yaml</code>, then reload scripts. This is a
+      copy &mdash; once pasted it is yours, and the task here will not track your edits.</p>
+      <pre class="export" id="export-yaml"></pre>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="export-close">Close</button>
+      <button type="button" class="primary" id="export-copy">Copy</button>
+    </div>
+  </dialog>
+
+  <script>
+    const BASE = "{{ base }}";
+    let schema = {}, devices = [], tasks = [], editing = null, view = "ui", stepsState = [];
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;","}":"&gt;",">":"&gt;","\"":"&quot;"}[c] || c));
+
+    async function load() {
+      const res = await fetch(`${BASE}/api/tasks`);
+      const body = await res.json();
+      schema = body.step_types; devices = body.devices; tasks = body.tasks;
+      renderList();
+    }
+
+    function renderList() {
+      $("count").textContent = tasks.length ? `${tasks.length} task(s)` : "";
+      if (!tasks.length) {
+        $("list").innerHTML = `<div class="empty"><p style="margin:0 0 6px">
+          <strong>No tasks yet</strong></p><p style="margin:0">A task is a sequence of moves
+          &mdash; drive somewhere, face a direction, photograph it.</p></div>`;
+        return;
+      }
+      $("list").innerHTML = tasks.map(t => `
+        <div class="task">
+          <div class="task-head">
+            <h2>${esc(t.name)}</h2><span class="slug">${esc(t.slug)}</span>
+            <span class="spacer"></span>
+            <button type="button" class="primary" data-run="${esc(t.slug)}">Run</button>
+            <button type="button" data-edit="${esc(t.slug)}">Edit</button>
+            <button type="button" data-export="${esc(t.slug)}">Export</button>
+            <button type="button" class="danger" data-del="${esc(t.slug)}">Delete</button>
+          </div>
+          <ol>${t.steps.map(s => `<li>${esc(describe(s))}</li>`).join("")}</ol>
+        </div>`).join("");
+    }
+
+    function describe(step) {
+      const spec = schema[step.type] || {};
+      const detail = (spec.fields || []).filter(f => step[f.name] !== undefined)
+        .map(f => `${f.name} ${step[f.name]}`).join(", ");
+      return (spec.label || step.type) + (detail ? ` (${detail})` : "");
+    }
+
+    function openEditor(task) {
+      editing = task;
+      $("dlg-title").textContent = task ? `Edit ${task.name}` : "New task";
+      $("t-name").value = task ? task.name : "";
+      $("t-did").innerHTML = devices.map(d =>
+        `<option value="${esc(d.did)}"${task && task.did === d.did ? " selected" : ""}>${esc(d.name)}</option>`).join("");
+      $("add-type").innerHTML = Object.entries(schema).map(([k, v]) =>
+        `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
+      stepsState = task ? JSON.parse(JSON.stringify(task.steps)) : [];
+      setView("ui");
+      renderSteps();
+      $("dlg-err").hidden = true;
+      $("editor").showModal();
+    }
+
+    function renderSteps() {
+      $("steps").innerHTML = stepsState.map((step, i) => {
+        const spec = schema[step.type] || {fields: [], label: step.type};
+        const fields = (spec.fields || []).map(f => `
+          <label class="field"><span>${esc(f.name)}${f.required ? " *" : ""}</span>
+            <input data-step="${i}" data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
+                   placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`).join("");
+        return `<div class="step">
+          <div class="step-head">
+            <strong>${i + 1}. ${esc(spec.label)}</strong>
+            <button type="button" data-up="${i}" ${i === 0 ? "disabled" : ""}>&uarr;</button>
+            <button type="button" data-down="${i}" ${i === stepsState.length - 1 ? "disabled" : ""}>&darr;</button>
+            <button type="button" class="danger" data-rm="${i}">Remove</button>
+          </div>
+          ${fields ? `<div class="grid2">${fields}</div>` : `<p class="hint">${esc(spec.help)}</p>`}
+        </div>`;
+      }).join("") || `<p class="hint">No steps yet. Add one below.</p>`;
+    }
+
+    function setView(next) {
+      view = next;
+      for (const b of document.querySelectorAll(".tabs button"))
+        b.setAttribute("aria-pressed", String(b.dataset.view === next));
+      $("view-ui").hidden = next !== "ui";
+      $("view-yaml").hidden = next !== "yaml";
+      if (next === "yaml") $("t-yaml").value = JSON.stringify(stepsState, null, 2);
+    }
+
+    function collectFromUi() {
+      for (const input of document.querySelectorAll("#steps input[data-step]")) {
+        const step = stepsState[Number(input.dataset.step)];
+        const value = input.value.trim();
+        if (value === "") delete step[input.dataset.field];
+        else step[input.dataset.field] = value;
+      }
+      return stepsState;
+    }
+
+    async function save() {
+      let steps;
+      if (view === "yaml") {
+        try { steps = JSON.parse($("t-yaml").value); }
+        catch (err) { return fail("That is not valid JSON: " + err.message); }
+      } else {
+        steps = collectFromUi();
+      }
+      const res = await fetch(`${BASE}/api/tasks`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          slug: editing ? editing.slug : undefined,
+          name: $("t-name").value.trim(), did: $("t-did").value, steps,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return fail(body.error || `Save failed (${res.status})`);
+      $("editor").close();
+      load();
+    }
+
+    function fail(message) {
+      $("dlg-err").textContent = message;
+      $("dlg-err").hidden = false;
+      return false;
+    }
+
+    document.addEventListener("click", async e => {
+      const t = e.target;
+      if (t.id === "new") openEditor(null);
+      else if (t.id === "cancel") $("editor").close();
+      else if (t.id === "save") save();
+      else if (t.dataset.view) setView(t.dataset.view);
+      else if (t.id === "add-step") {
+        stepsState.push({type: $("add-type").value}); renderSteps();
+      } else if (t.dataset.rm !== undefined) {
+        collectFromUi(); stepsState.splice(Number(t.dataset.rm), 1); renderSteps();
+      } else if (t.dataset.up !== undefined) {
+        collectFromUi(); const i = Number(t.dataset.up);
+        [stepsState[i - 1], stepsState[i]] = [stepsState[i], stepsState[i - 1]]; renderSteps();
+      } else if (t.dataset.down !== undefined) {
+        collectFromUi(); const i = Number(t.dataset.down);
+        [stepsState[i + 1], stepsState[i]] = [stepsState[i], stepsState[i + 1]]; renderSteps();
+      } else if (t.dataset.edit) {
+        openEditor(tasks.find(x => x.slug === t.dataset.edit));
+      } else if (t.dataset.del) {
+        if (!confirm(`Delete ${t.dataset.del}?`)) return;
+        await fetch(`${BASE}/api/tasks/${t.dataset.del}`, {method: "DELETE"});
+        load();
+      } else if (t.dataset.run) {
+        t.disabled = true; t.textContent = "Running...";
+        const res = await fetch(`${BASE}/api/tasks/${t.dataset.run}/run`, {method: "POST"});
+        t.textContent = res.ok ? "Started" : "Failed";
+        setTimeout(() => { t.disabled = false; t.textContent = "Run"; }, 2500);
+      } else if (t.dataset.export) {
+        const res = await fetch(`${BASE}/api/tasks/${t.dataset.export}/export`);
+        const body = await res.json();
+        $("export-yaml").textContent = body.yaml || body.error || "Nothing to export";
+        $("exporter").showModal();
+      } else if (t.id === "export-close") $("exporter").close();
+      else if (t.id === "export-copy") {
+        navigator.clipboard?.writeText($("export-yaml").textContent);
+        t.textContent = "Copied"; setTimeout(() => t.textContent = "Copy", 1500);
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

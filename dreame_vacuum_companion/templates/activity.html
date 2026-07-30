@@ -74,7 +74,9 @@
 
   <nav>
     <a href="{{ base }}/">Devices</a>
-    <a href="{{ base }}/activity" aria-current="page">Activity</a>
+    <a href="{{ base }}/tasks"{% if page == 'tasks' %} aria-current="page"{% endif %}>Tasks</a>
+    <a href="{{ base }}/snapshots"{% if page == 'snapshots' %} aria-current="page"{% endif %}>Snapshots</a>
+    <a href="{{ base }}/activity"{% if page == 'activity' %} aria-current="page"{% endif %}>Activity</a>
   </nav>
 
   <div id="runs"></div>

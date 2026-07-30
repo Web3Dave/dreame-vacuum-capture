@@ -19,6 +19,7 @@ import os
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
 import ha_client
+import steps as step_schema
 import store
 
 app = Flask(__name__)
@@ -93,6 +94,7 @@ def index():
 
     return render_template(
         "index.html",
+        page="devices",
         devices=devices,
         ha_up=ha_up,
         viewer=_viewer(),
@@ -129,9 +131,130 @@ def api_service():
     return jsonify({"success": ok}), (200 if ok else 502)
 
 
+@app.route("/tasks")
+def tasks():
+    return render_template("tasks.html", base=_ingress_base(), viewer=_viewer(), page="tasks")
+
+
+@app.route("/api/tasks", methods=["GET"])
+def api_tasks():
+    return jsonify({
+        "tasks": store.list_tasks(),
+        "devices": [
+            {"did": d["did"], "name": d.get("name") or d["did"]}
+            for d in store.list_devices()
+        ],
+        "step_types": {
+            kind: {
+                "label": spec["label"], "help": spec["help"],
+                "fields": [
+                    {"name": n, "type": t, "required": r, "default": d, "help": h}
+                    for n, t, r, d, h in spec["fields"]
+                ],
+            }
+            for kind, spec in step_schema.STEP_TYPES.items()
+        },
+    })
+
+
+@app.route("/api/tasks", methods=["POST"])
+def api_save_task():
+    body = request.get_json(silent=True) or {}
+    for field in ("did", "name", "steps"):
+        if not body.get(field):
+            return jsonify({"error": f"{field} is required"}), 400
+    slug = store.slugify(body.get("slug") or body["name"])
+    if not slug:
+        return jsonify({"error": "Use letters or numbers in the name"}), 400
+    try:
+        validated = step_schema.validate_steps(body["steps"])
+    except step_schema.StepError as err:
+        return jsonify({"error": str(err)}), 400
+    store.save_task(slug, body["did"], body["name"], validated)
+    return jsonify({"task": store.get_task(slug)})
+
+
+@app.route("/api/tasks/<slug>", methods=["DELETE"])
+def api_delete_task(slug):
+    if not store.delete_task(slug):
+        return jsonify({"error": "No such task"}), 404
+    return jsonify({"success": True})
+
+
+@app.route("/api/tasks/<slug>/export")
+def api_export_task(slug):
+    """A scripts.yaml entry with the steps expanded.
+
+    One-way on purpose: once pasted into Home Assistant it is the user's, and
+    nothing here tries to keep the two in step.
+    """
+    task = store.get_task(slug)
+    if not task:
+        return jsonify({"error": "No such task"}), 404
+    entities = (store.get_device(task["did"]) or {}).get("entities") or {}
+    if not entities.get("vacuum"):
+        return jsonify({"error": "This vacuum has not registered its entities yet"}), 409
+    try:
+        calls = step_schema.to_service_calls(
+            task["steps"], entities["vacuum"], entities.get("stream")
+        )
+    except step_schema.StepError as err:
+        return jsonify({"error": str(err)}), 409
+    return jsonify({"yaml": _script_yaml(task, calls)})
+
+
+@app.route("/api/tasks/<slug>/run", methods=["POST"])
+def api_run_task(slug):
+    task = store.get_task(slug)
+    if not task:
+        return jsonify({"error": "No such task"}), 404
+    entities = (store.get_device(task["did"]) or {}).get("entities") or {}
+    vacuum = entities.get("vacuum")
+    if not vacuum:
+        return jsonify({"error": "This vacuum has not registered its entities yet"}), 409
+    # Runs through the integration rather than firing the steps from here, so
+    # a run started in the UI is narrated and guarded exactly like one started
+    # from an automation.
+    ok = ha_client.call_service(
+        "dreame_vacuum_core", "start_task", {"entity_id": vacuum, "task": slug}
+    )
+    return jsonify({"success": ok}), (200 if ok else 502)
+
+
+def _script_yaml(task, calls):
+    """Hand-rolled rather than via a yaml library: the add-on image has no
+    PyYAML, and the shape here is small and fixed."""
+    lines = [
+        f"{task['slug']}:",
+        f"  alias: {task['name']}",
+        "  mode: single",
+        "  sequence:",
+    ]
+    for call in calls:
+        lines.append(f"    - action: {call['action']}")
+        target = call.get("target") or {}
+        if target:
+            lines.append("      target:")
+            lines.append(f"        entity_id: {target['entity_id']}")
+        data = call.get("data") or {}
+        if data:
+            lines.append("      data:")
+            for key, value in data.items():
+                if isinstance(value, bool):
+                    rendered = "true" if value else "false"
+                elif isinstance(value, str):
+                    rendered = value
+                elif isinstance(value, float) and value.is_integer():
+                    rendered = str(int(value))
+                else:
+                    rendered = str(value)
+                lines.append(f"        {key}: {rendered}")
+    return "\n".join(lines) + "\n"
+
+
 @app.route("/snapshots")
 def snapshots():
-    return render_template("snapshots.html", base=_ingress_base(), viewer=_viewer())
+    return render_template("snapshots.html", base=_ingress_base(), viewer=_viewer(), page="snapshots")
 
 
 @app.route("/api/snapshots")
@@ -158,6 +281,7 @@ def activity():
         "activity.html",
         base=_ingress_base(),
         viewer=_viewer(),
+        page="activity",
         runs=store.list_runs(limit=50),
     )
 

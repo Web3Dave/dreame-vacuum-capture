@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Dreame Companion</title>
+  <title>Snapshots - Dreame Companion</title>
   <style>
     :root {
       --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
@@ -43,18 +43,30 @@
     .todo ul { margin:8px 0 0; padding-left:20px; }
     .todo li { margin:3px 0; }
   </style>
+  <style>
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .tag { margin-bottom:26px; }
+    .tag h2 { font-size:15px; margin:0 0 2px; font-weight:600;
+              font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    .tag .sub { display:block; margin-bottom:10px; }
+    .shots { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+    figure { margin:0; background:var(--card); border:1px solid var(--line);
+             border-radius:10px; overflow:hidden; }
+    figure a { display:block; line-height:0; }
+    figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
+    figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
+                 font-variant-numeric:tabular-nums; }
+  </style>
 </head>
 <body>
   <header>
     <h1>Dreame Companion</h1>
-    {% if ha_up %}
-      <span class="pill ok">Home Assistant connected</span>
-    {% else %}
-      <span class="pill bad">Home Assistant API unavailable</span>
-    {% endif %}
     {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
   </header>
-
   <nav>
     <a href="{{ base }}/">Devices</a>
     <a href="{{ base }}/tasks"{% if page == 'tasks' %} aria-current="page"{% endif %}>Tasks</a>
@@ -62,60 +74,42 @@
     <a href="{{ base }}/activity"{% if page == 'activity' %} aria-current="page"{% endif %}>Activity</a>
   </nav>
 
-  {% if devices %}
-    <div class="grid">
-      {% for dev in devices %}
-        <div class="card">
-          <h2>{{ dev.name or dev.did }}</h2>
-          <div class="model">{{ dev.model or 'unknown model' }} &middot; did {{ dev.did }}</div>
-          {% if dev.state %}
-            <table>
-              {% for role, s in dev.state.items() %}
-                <tr>
-                  <td>{{ role }}</td>
-                  <td>
-                    {{ s.state }}
-                    {% if s.attributes.battery_level is defined %}
-                      &middot; {{ s.attributes.battery_level }}%
-                    {% endif %}
-                  </td>
-                </tr>
-              {% endfor %}
-            </table>
-          {% elif dev.entities %}
-            <table>
-              {% for role, eid in dev.entities.items() %}
-                <tr><td>{{ role }}</td><td><code>{{ eid }}</code></td></tr>
-              {% endfor %}
-            </table>
-            <p class="sub" style="margin-bottom:0">State unavailable &mdash; check the Home Assistant API connection.</p>
-          {% else %}
-            <p class="sub" style="margin-bottom:0">No entities reported.</p>
-          {% endif %}
-        </div>
-      {% endfor %}
-    </div>
-  {% else %}
-    <div class="empty">
-      <p style="margin-top:0"><strong>No devices registered yet.</strong></p>
-      <p>Install and configure the <code>dreame_vacuum_core</code> integration.
-         It registers its devices with this add-on on startup.</p>
-    </div>
-  {% endif %}
+  <div id="groups"></div>
+  <footer id="foot"></footer>
 
-  <div class="todo card">
-    <strong>Not built yet</strong>
-    <ul>
-      <li>Patrol / security route editor (routes are already persisted in SQLite)</li>
-      <li>Live camera view via the RTSP feed</li>
-      <li>Sound playback &mdash; <code>siid 7 / aiid 2 / piid 4</code></li>
-      <li>Closed-loop <em>rotate to heading</em> (pose feedback is ~0.4&nbsp;Hz, so step&rarr;settle&rarr;measure)</li>
-    </ul>
-  </div>
+  <script>
+    const BASE = "{{ base }}";
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
 
-  <footer>
-    {{ devices|length }} device(s) &middot; {{ routes|length }} route(s) &middot;
-    control flows through Home Assistant, which remains the source of truth for vacuum state.
-  </footer>
+    fetch(`${BASE}/api/snapshots`).then(r => r.json()).then(body => {
+      const groups = body.snapshots || [];
+      if (!groups.length) {
+        document.getElementById("groups").innerHTML = `<div class="empty">
+          <p style="margin:0 0 6px"><strong>No snapshots yet</strong></p>
+          <p style="margin:0">Photos appear here grouped by tag, newest first.</p></div>`;
+        return;
+      }
+      document.getElementById("groups").innerHTML = groups.map(g => `
+        <section class="tag">
+          <h2>${esc(g.tag)}</h2>
+          <span class="sub">${g.count} photo${g.count === 1 ? "" : "s"}</span>
+          <div class="shots">
+            ${g.snapshots.map(s => `
+              <figure>
+                <a href="${BASE}/snapshot/${encodeURIComponent(g.tag)}/${encodeURIComponent(s.filename)}"
+                   target="_blank" rel="noopener">
+                  <img loading="lazy" alt="${esc(s.filename)}"
+                       src="${BASE}/snapshot/${encodeURIComponent(g.tag)}/${encodeURIComponent(s.filename)}">
+                </a>
+                <figcaption>${new Date(s.taken_at * 1000).toLocaleString()}</figcaption>
+              </figure>`).join("")}
+          </div>
+        </section>`).join("");
+      const total = groups.reduce((n, g) => n + g.count, 0);
+      document.getElementById("foot").textContent =
+        `${total} snapshot${total === 1 ? "" : "s"} across ${groups.length} tag${groups.length === 1 ? "" : "s"}.`;
+    });
+  </script>
 </body>
 </html>
