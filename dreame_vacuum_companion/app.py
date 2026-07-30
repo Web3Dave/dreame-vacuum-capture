@@ -10,9 +10,11 @@ used directly by end users.
 
 POST /devices       {username, password, country}
                     -> discovers every device on the account
-POST /capture       {username, password, country, four_digit_code, did}
+POST /capture       {username, password, country, four_digit_code, did,
+                     category?}
                     -> one-shot: activation sequence -> grab one JPEG frame
-                       -> save to /media/dreame-capture/<did>/ -> tear down
+                       -> /media/dreame-capture/snapshots/<category>/<ts>.jpg
+                          plus latest.jpg in the same folder -> tear down
 POST /stream/start  {username, password, country, four_digit_code, did}
                     -> activation sequence -> keeps the P2P session alive,
                        republishing it as RTSP via a bundled MediaMTX server
@@ -130,6 +132,25 @@ def _require_token():
 
 def _media_dir(did):
     path = os.path.join(MEDIA_ROOT, did)
+    os.makedirs(path, exist_ok=True)
+    return path
+
+
+def _safe_category(value):
+    """A filesystem-safe folder name from caller-supplied text.
+
+    Whitelisted rather than escaped: this becomes a path segment, and the
+    caller is a network client, so anything resembling "../" must not survive.
+    """
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
+    cleaned = cleaned.strip("_")[:48]
+    return cleaned.lower() or "general"
+
+
+def _snapshot_dir(category):
+    """Snapshots live under a category rather than per device: a category like
+    'poop_check' is what someone actually looks for, and a did is not."""
+    path = os.path.join(MEDIA_ROOT, "snapshots", _safe_category(category))
     os.makedirs(path, exist_ok=True)
     return path
 
@@ -357,10 +378,14 @@ def capture():
     body = _require_body("username", "password", "four_digit_code", "did")
     did = body["did"]
 
-    media_dir = _media_dir(did)
+    category = _safe_category(body.get("category"))
+    snapshot_dir = _snapshot_dir(category)
     timestamp = time.strftime("%Y%m%d-%H%M%S")
-    snapshot_path = os.path.join(media_dir, f"snapshot_{timestamp}.jpg")
-    latest_path = os.path.join(media_dir, "latest.jpg")
+    snapshot_path = os.path.join(snapshot_dir, f"{timestamp}.jpg")
+    latest_path = os.path.join(snapshot_dir, "latest.jpg")
+    # Also kept per device, because /latest.jpg (and so the camera entity's
+    # thumbnail) is addressed by did and knows nothing about categories.
+    device_latest = os.path.join(_media_dir(did), "latest.jpg")
 
     # The vacuum's camera only supports one live encoder session at a time -
     # starting a second one (via run_activation) would kill whatever session
@@ -400,8 +425,11 @@ def capture():
             if not ok:
                 abort(502, f"ffmpeg failed to capture a frame: {stderr[-500:]}")
 
-        with open(snapshot_path, "rb") as src, open(latest_path, "wb") as dst:
-            dst.write(src.read())
+        with open(snapshot_path, "rb") as src:
+            image = src.read()
+        for destination in (latest_path, device_latest):
+            with open(destination, "wb") as dst:
+                dst.write(image)
     finally:
         if owns_session and proc is not None:
             proc.terminate()
@@ -412,7 +440,16 @@ def capture():
         if owns_session:
             _safe_disconnect(protocol)
 
-    return jsonify({"success": True, "path": snapshot_path})
+    return jsonify({
+        "success": True,
+        "path": snapshot_path,
+        "latest": latest_path,
+        "category": category,
+        # Relative to the media root, which is what a media-source or www
+        # path needs - callers should not have to strip a prefix themselves.
+        "media_path": os.path.relpath(snapshot_path, MEDIA_ROOT),
+        "latest_media_path": os.path.relpath(latest_path, MEDIA_ROOT),
+    })
 
 
 def _spawn_ffmpeg_republish(live_url, rtsp_url):
