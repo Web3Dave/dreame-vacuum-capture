@@ -61,16 +61,25 @@ def _viewer() -> str | None:
 
 SNAPSHOT_ROOT = "/media/dreame-capture/snapshots"
 
+# How many snapshots the Tags page shows per tag before "view all" takes over.
+TAG_PREVIEW_COUNT = 20
+# Page size for the tag detail view's scroll-to-load-more.
+TAG_PAGE_SIZE = 40
+
 
 def _safe_tag(value):
     cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
     return cleaned.strip("_")[:48].lower() or "general"
 
 
-def _snapshot_index(tag=None):
+def _snapshot_index(tag=None, limit=None):
     """Snapshots grouped by tag, newest first within each.
 
     latest.jpg is skipped: it duplicates whichever timestamped file is newest.
+
+    `limit` caps how many snapshots are returned per tag - `count` is always
+    the true total, so a caller that only wants a preview row (the Tags page)
+    can still tell the user there are more without fetching them.
     """
     if not os.path.isdir(SNAPSHOT_ROOT):
         return []
@@ -92,7 +101,11 @@ def _snapshot_index(tag=None):
         if not shots:
             continue
         shots.sort(key=lambda item: item["taken_at"], reverse=True)
-        groups.append({"tag": name, "count": len(shots), "snapshots": shots})
+        total = len(shots)
+        groups.append({
+            "tag": name, "count": total,
+            "snapshots": shots[:limit] if limit is not None else shots,
+        })
     return groups
 
 
@@ -592,7 +605,7 @@ def api_tags_overview():
             name for name in os.listdir(SNAPSHOT_ROOT)
             if os.path.isdir(os.path.join(SNAPSHOT_ROOT, name))
         )
-    snaps = {g["tag"]: g for g in _snapshot_index()}
+    snaps = {g["tag"]: g for g in _snapshot_index(limit=TAG_PREVIEW_COUNT)}
     watching = {}
     for c in store.list_classifiers():
         for link in c["tags"]:
@@ -608,6 +621,40 @@ def api_tags_overview():
         }
         for tag in store.list_tags()
     ]})
+
+
+@app.route("/tags/<tag_id>")
+def tag_detail(tag_id):
+    """All of a tag's snapshots, loaded a page at a time as the user scrolls -
+    the Tags page itself only ever shows a preview row."""
+    safe = _safe_tag(tag_id)
+    tag = next((t for t in store.list_tags() if t["id"] == safe), None)
+    if not tag:
+        abort(404)
+    return render_template("tag_detail.html", base=_ingress_base(), viewer=_viewer(),
+                           page="tags", tag=tag, page_size=TAG_PAGE_SIZE)
+
+
+@app.route("/api/tags/<tag_id>/snapshots")
+def api_tag_snapshots(tag_id):
+    """One page of a tag's snapshots, newest first, for scroll-to-load-more."""
+    try:
+        offset = int(request.args.get("offset", 0))
+        limit = int(request.args.get("limit", TAG_PAGE_SIZE))
+    except (TypeError, ValueError):
+        return jsonify({"error": "offset and limit must be numbers"}), 400
+    if offset < 0 or limit < 1:
+        return jsonify({"error": "offset must be >= 0 and limit must be >= 1"}), 400
+    limit = min(limit, 200)
+
+    groups = _snapshot_index(tag_id)
+    all_shots = groups[0]["snapshots"] if groups else []
+    page = all_shots[offset:offset + limit]
+    return jsonify({
+        "snapshots": page,
+        "total": len(all_shots),
+        "has_more": offset + limit < len(all_shots),
+    })
 
 
 @app.route("/api/tags/<tag_id>", methods=["PATCH"])

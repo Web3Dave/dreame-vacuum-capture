@@ -1,0 +1,168 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ tag.name }} - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    a.back { color:var(--muted); text-decoration:none; font-size:14px; display:inline-block;
+             margin-bottom:14px; }
+    a.back:hover { color:var(--text); }
+    header { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:6px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .slug { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; color:var(--muted); }
+    .sub { color:var(--muted); font-size:13px; margin:0 0 20px; }
+    .empty { background:var(--card); border:1px dashed var(--line); border-radius:12px;
+             padding:28px; text-align:center; color:var(--muted); }
+    .shots { display:grid; gap:14px; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+    figure { margin:0; background:var(--card); border:1px solid var(--line);
+             border-radius:10px; overflow:hidden; position:relative; }
+    figure a.open { display:block; line-height:0; }
+    figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
+    figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
+                 font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:6px; }
+    figcaption .when { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+    .dots { border:none; background:rgba(20,20,20,.55); color:#fff; width:26px; height:26px;
+            border-radius:999px; cursor:pointer; font-size:16px; line-height:1;
+            display:flex; align-items:center; justify-content:center; padding:0; }
+    .dots:hover { background:rgba(20,20,20,.75); }
+    .dots-anchor { position:absolute; top:8px; right:8px; }
+    .menu { position:absolute; top:32px; right:0; background:var(--card); border:1px solid var(--line);
+            border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.18); min-width:190px;
+            padding:4px; z-index:5; }
+    .menu button { display:block; width:100%; text-align:left; padding:8px 10px; font-size:13.5px;
+                   border:none; background:transparent; color:var(--text); border-radius:6px; cursor:pointer; }
+    .menu button:hover { background:rgba(127,127,127,.12); }
+
+    .sentinel { height:1px; }
+    .loading-more { text-align:center; color:var(--muted); font-size:13px; padding:18px 0; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+  </style>
+</head>
+<body>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/tags" aria-current="page">Tags</a>
+    <a href="{{ base }}/classifications">Classifications</a>
+    <a href="{{ base }}/activity">Activity</a>
+  </nav>
+
+  <a class="back" href="{{ base }}/tags">&larr; Tags</a>
+  <header>
+    <h1>{{ tag.name }}</h1>
+    <span class="slug">{{ tag.id }}</span>
+  </header>
+  <p class="sub" id="sub"></p>
+
+  <div id="shots" class="shots"></div>
+  <div class="loading-more" id="loading" hidden>Loading more&hellip;</div>
+  <div class="sentinel" id="sentinel"></div>
+
+  <script>
+    const BASE = "{{ base }}";
+    const TAG_ID = "{{ tag.id }}";
+    const PAGE_SIZE = {{ page_size }};
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+
+    let offset = 0, total = 0, hasMore = true, loading = false;
+
+    function figureHtml(s) {
+      const url = `${BASE}/snapshot/${encodeURIComponent(TAG_ID)}/${encodeURIComponent(s.filename)}`;
+      return `
+        <figure data-filename="${esc(s.filename)}">
+          <a class="open" href="${url}" target="_blank" rel="noopener">
+            <img loading="lazy" alt="${esc(s.filename)}" src="${url}">
+          </a>
+          <div class="dots-anchor">
+            <button type="button" class="dots" data-menu="${esc(s.filename)}" aria-label="Options">&#8942;</button>
+            <div class="menu" hidden>
+              <button type="button" data-assign="${esc(s.filename)}">Assign classification</button>
+            </div>
+          </div>
+          <figcaption><span class="when">${new Date(s.taken_at * 1000).toLocaleString()}</span></figcaption>
+        </figure>`;
+    }
+
+    async function loadMore() {
+      if (loading || !hasMore) return;
+      loading = true;
+      document.getElementById("loading").hidden = false;
+      const res = await fetch(`${BASE}/api/tags/${encodeURIComponent(TAG_ID)}/snapshots` +
+        `?offset=${offset}&limit=${PAGE_SIZE}`);
+      const body = await res.json().catch(() => ({}));
+      loading = false;
+      document.getElementById("loading").hidden = true;
+      if (!res.ok) return;
+
+      total = body.total || 0;
+      hasMore = !!body.has_more;
+      const page = body.snapshots || [];
+      offset += page.length;
+
+      if (total === 0) {
+        document.getElementById("shots").innerHTML = `<div class="empty" style="grid-column:1/-1">
+          <p style="margin:0 0 6px"><strong>No snapshots yet</strong></p>
+          <p style="margin:0">A task with a snapshot step using this tag will fill this page.</p></div>`;
+        document.getElementById("sub").textContent = "No snapshots yet.";
+        return;
+      }
+
+      document.getElementById("shots").insertAdjacentHTML(
+        "beforeend", page.map(figureHtml).join(""));
+      document.getElementById("sub").textContent =
+        `${offset} of ${total} snapshot${total === 1 ? "" : "s"} loaded`;
+    }
+
+    // Load another page once the sentinel below the grid is close to view,
+    // rather than waiting for it to be exactly on screen - the fetch has
+    // time to land before the user actually hits the bottom.
+    const observer = new IntersectionObserver(entries => {
+      if (entries.some(e => e.isIntersecting)) loadMore();
+    }, {rootMargin: "600px"});
+    observer.observe(document.getElementById("sentinel"));
+
+    function closeMenus(except) {
+      for (const menu of document.querySelectorAll(".menu")) {
+        if (menu !== except) menu.hidden = true;
+      }
+    }
+
+    document.addEventListener("click", e => {
+      const t = e.target;
+      if (t.dataset.menu !== undefined) {
+        const menu = t.nextElementSibling;
+        const willOpen = menu.hidden;
+        closeMenus();
+        menu.hidden = !willOpen;
+        return;
+      }
+      if (t.dataset.assign !== undefined) {
+        // Wiring for a later step - picking a classification to attach this
+        // snapshot to as a training example. No effect yet.
+        closeMenus();
+        return;
+      }
+      if (!t.closest(".dots-anchor")) closeMenus();
+    });
+
+    loadMore();
+  </script>
+</body>
+</html>

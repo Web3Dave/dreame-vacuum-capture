@@ -80,13 +80,25 @@
     .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
     .dlg-body { padding:16px 18px; }
     .dlg-body label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-    .shots { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+    /* A single row that never wraps: the point is a preview, so the last
+       thumbnail is meant to be cut off by the container rather than pushed
+       onto a second line. The "view all" arrow sits after it, in view. */
+    .shots-row { display:flex; align-items:stretch; gap:10px; }
+    .shots { flex:1; min-width:0; display:flex; gap:12px; overflow:hidden; }
+    .shots figure { flex:0 0 170px; width:170px; }
     figure { margin:0; background:var(--card); border:1px solid var(--line);
              border-radius:10px; overflow:hidden; }
     figure a { display:block; line-height:0; }
     figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
     figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
-                 font-variant-numeric:tabular-nums; }
+                 font-variant-numeric:tabular-nums; white-space:nowrap;
+                 overflow:hidden; text-overflow:ellipsis; }
+    .shots-more { flex:0 0 44px; display:flex; align-items:center; justify-content:center;
+                  border:1px solid var(--line); border-radius:10px; background:var(--card);
+                  color:var(--muted); text-decoration:none; }
+    .shots-more:hover { color:var(--text); border-color:var(--accent); }
+    .shots-more svg { width:18px; height:18px; fill:none; stroke:currentColor;
+                      stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   </style>
 </head>
 <body>
@@ -181,16 +193,22 @@
                   `<span class="chip" title="id: ${esc(c.id)}">${esc(c.name)}</span>`).join("")
               : `<span class="chip none">No classifications watching this tag</span>`}
           </div>
-          ${t.count ? `<div class="shots">
-            ${t.snapshots.map(s => `
-              <figure>
-                <a href="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}"
-                   target="_blank" rel="noopener">
-                  <img loading="lazy" alt="${esc(s.filename)}"
-                       src="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}">
-                </a>
-                <figcaption>${new Date(s.taken_at * 1000).toLocaleString()}</figcaption>
-              </figure>`).join("")}
+          ${t.count ? `<div class="shots-row">
+            <div class="shots">
+              ${t.snapshots.map(s => `
+                <figure>
+                  <a href="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}"
+                     target="_blank" rel="noopener">
+                    <img loading="lazy" alt="${esc(s.filename)}"
+                         src="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}">
+                  </a>
+                  <figcaption>${new Date(s.taken_at * 1000).toLocaleString()}</figcaption>
+                </figure>`).join("")}
+            </div>
+            <a class="shots-more" href="${BASE}/tags/${encodeURIComponent(t.id)}"
+               title="View all ${t.count} snapshot${t.count === 1 ? "" : "s"}">
+              <svg viewBox="0 0 24 24"><polyline points="9 6 15 12 9 18"/></svg>
+            </a>
           </div>` : `<p class="hint" style="margin:0">No snapshots yet - a task with a
             snapshot step using this tag will fill it.</p>`}
         </section>`).join("");
