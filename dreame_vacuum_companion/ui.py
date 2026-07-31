@@ -24,6 +24,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 import ha_client
 import yaml
 
+import classify_store
 import config_store
 import steps as step_schema
 import store
@@ -308,6 +309,42 @@ def api_delete_classification(cid):
     if not config_store.delete_classifier(cid):
         return jsonify({"error": "No such classification"}), 404
     return jsonify({"success": True})
+
+
+@app.route("/api/classifications/<cid>/configure", methods=["PUT"])
+def api_configure_classification(cid):
+    """Set the type, classes and threshold that turn a bare classification
+    into one that can be trained - what the Classifications tab prompts for
+    when a card is not configured yet."""
+    if not config_store.get_classifier(cid):
+        return jsonify({"error": "No such classification"}), 404
+    body = request.get_json(silent=True) or {}
+    classification_type = body.get("classification_type")
+    classes = body.get("classes")
+    if not isinstance(classes, list):
+        return jsonify({"error": "classes must be a list of names"}), 400
+    # Trimmed and de-duplicated here rather than left to validate() to catch,
+    # so "Empty" typed twice with different spacing is a mistake the save
+    # quietly fixes instead of a mistake it merely reports.
+    cleaned, seen = [], set()
+    for c in classes:
+        name = str(c).strip()
+        if name and name.lower() not in seen:
+            cleaned.append(name)
+            seen.add(name.lower())
+    try:
+        threshold = float(body.get("threshold", 0.8))
+    except (TypeError, ValueError):
+        return jsonify({"error": "threshold must be a number"}), 400
+    try:
+        updated = config_store.configure_classifier(
+            cid, enabled=bool(body.get("enabled", False)),
+            classification_type=classification_type,
+            classes=cleaned, threshold=threshold,
+        )
+    except config_store.ConfigError as err:
+        return jsonify({"error": str(err)}), 400
+    return jsonify({"classification": updated})
 
 
 def _valid_crop(crop):
@@ -659,6 +696,34 @@ def api_tag_snapshots(tag_id):
     })
 
 
+@app.route("/api/tags/<tag_id>/snapshots/<filename>/classify", methods=["POST"])
+def api_classify_snapshot(tag_id, filename):
+    """Label one snapshot for one classification - the 'Assign classification'
+    action on the tag detail page.
+
+    This is the entire labelling step: crop the snapshot per the
+    (classification, tag) link, file it under the chosen class. No training
+    happens here - that is a deliberate later action once a class has enough
+    examples.
+    """
+    safe_tag = _safe_tag(tag_id)
+    safe_file = os.path.basename(filename)
+    if not safe_file.lower().endswith(".jpg"):
+        return jsonify({"error": "Not a snapshot filename"}), 400
+    body = request.get_json(silent=True) or {}
+    classifier_id = body.get("classification_id")
+    label = body.get("label")
+    if not classifier_id or not label:
+        return jsonify({"error": "classification_id and label are required"}), 400
+
+    snapshot_path = os.path.join(SNAPSHOT_ROOT, safe_tag, safe_file)
+    try:
+        result = classify_store.assign_label(classifier_id, safe_tag, snapshot_path, label)
+    except classify_store.AssignError as err:
+        return jsonify({"error": str(err)}), 400
+    return jsonify({"assigned": result})
+
+
 @app.route("/api/tags/<tag_id>", methods=["PATCH"])
 def api_rename_tag(tag_id):
     """Rename a tag. The id (the folder name, and what a step's tag field
@@ -727,6 +792,32 @@ def health():
 def config_editor_page():
     return render_template("config_editor.html", base=_ingress_base(), viewer=_viewer(),
                            page="config")
+
+
+@app.route("/api/settings")
+def api_settings():
+    return jsonify({"settings": config_store.get_settings()})
+
+
+@app.route("/api/settings", methods=["PUT"])
+def api_save_settings():
+    """The one add-on-wide model setting so far: where to look for a
+    MobileNetV2 weights file Frigate (or an earlier training run here) has
+    already downloaded, so training does not fetch its own copy.
+
+    Worth being honest about what this can and cannot do: Home Assistant add-
+    ons are separate containers with separate filesystems, so this only finds
+    anything if the path given is actually reachable from inside this
+    container - typically because it was placed under /share or /media,
+    which can be mounted into more than one add-on, not Frigate's own /config,
+    which cannot.
+    """
+    body = request.get_json(silent=True) or {}
+    try:
+        settings = config_store.save_settings(body.get("mobilenet_weights_path"))
+    except config_store.ConfigError as err:
+        return jsonify({"error": str(err)}), 400
+    return jsonify({"settings": settings})
 
 
 @app.route("/api/config/raw")

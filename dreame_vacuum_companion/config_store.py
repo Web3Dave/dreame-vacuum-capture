@@ -16,6 +16,7 @@ annotate their config, which is most of the point of it being a file.
 """
 from __future__ import annotations
 
+import copy
 import io
 import threading
 from pathlib import Path
@@ -27,7 +28,16 @@ import steps as step_schema
 
 CONFIG_PATH = Path("/data/config.yaml")
 
-TOP_LEVEL_KEYS = ("tags", "tasks", "classifications")
+TOP_LEVEL_KEYS = ("tags", "tasks", "classifications", "settings")
+
+# The two shapes a classification can learn, straight from Frigate's own
+# distinction: a tracked object has one sub_label (a specific identity - a
+# name, a finer type) but can carry several independent attributes at once
+# (helmet: yes, vest: yes). Neither applies to *us* in Frigate's sense - we
+# have no tracked object to attach a field to - but the vocabulary is worth
+# keeping, because it is the same choice a person is making: "is this one
+# fact replacing the last" vs "are these facts that can coexist".
+CLASSIFICATION_TYPES = ("sub_label", "attribute")
 
 STARTER_CONFIG = """\
 # Dreame Vacuum Companion configuration.
@@ -46,8 +56,13 @@ tasks: {}
 
 # Classifications read a state from the snapshots of the tags they are linked
 # to. Each link carries its own crop, because the same state seen from two
-# viewpoints needs two different squares.
+# viewpoints needs two different squares. A classification does nothing until
+# it is configured with a type (sub_label or attribute) and at least two
+# classes - the UI prompts for these when they are missing.
 classifications: {}
+
+# Add-on-wide settings, not tied to any one classification.
+settings: {}
 """
 
 _lock = threading.RLock()
@@ -216,6 +231,38 @@ def validate(data: dict) -> None:
                     f"{link_where}.crop: must be [x1, y1, x2, y2] as fractions "
                     "of the image between 0 and 1, with some area to it"
                 )
+
+        # These three only matter once someone has set at least one of them -
+        # an unconfigured classification (freshly created, nothing chosen
+        # yet) is a valid, ordinary state, not an error.
+        want_type = body.get("classification_type")
+        classes = body.get("classes")
+        touched = want_type is not None or classes is not None or "threshold" in body
+        if touched:
+            if want_type not in CLASSIFICATION_TYPES:
+                problems.append(
+                    f"{where}.classification_type: must be one of "
+                    f"{', '.join(CLASSIFICATION_TYPES)}"
+                )
+            if not isinstance(classes, list) or len(classes) < 2:
+                problems.append(f"{where}.classes: needs at least two classes")
+            elif len({str(c).strip().lower() for c in classes}) != len(classes):
+                problems.append(f"{where}.classes: class names must be distinct")
+            elif any(not str(c).strip() for c in classes):
+                problems.append(f"{where}.classes: a class name cannot be empty")
+            threshold = body.get("threshold", 0.8)
+            try:
+                if not (0.0 < float(threshold) <= 1.0):
+                    raise ValueError
+            except (TypeError, ValueError):
+                problems.append(f"{where}.threshold: must be a number between 0 and 1")
+
+    settings = data.get("settings") or {}
+    if not isinstance(settings, dict):
+        problems.append("settings: must be a mapping")
+    elif "mobilenet_weights_path" in settings and settings["mobilenet_weights_path"] is not None:
+        if not isinstance(settings["mobilenet_weights_path"], str):
+            problems.append("settings.mobilenet_weights_path: must be a text path")
 
     if problems:
         raise ConfigError("\n".join(problems))
@@ -401,9 +448,20 @@ def delete_task(slug):
 def _classifier(cid, body):
     body = body or {}
     links = body.get("tags") or {}
+    classes = _plain(body.get("classes")) or []
+    classification_type = body.get("classification_type")
     return {
         "id": str(cid),
         "name": str(body.get("name") or cid),
+        "enabled": bool(body.get("enabled", False)),
+        "classification_type": str(classification_type) if classification_type else None,
+        "classes": [str(c) for c in classes],
+        "threshold": float(body.get("threshold", 0.8)),
+        # Derived, not stored: a classification with a type and at least two
+        # classes can be trained on and used; one missing either cannot, and
+        # the UI uses this one flag to decide whether to show the "finish
+        # setting this up" prompt or the ordinary card.
+        "configured": bool(classification_type) and len(classes) >= 2,
         "tags": [
             {"tag_id": str(tid), "crop": _plain((link or {}).get("crop")) or []}
             for tid, link in sorted(links.items())
@@ -433,9 +491,48 @@ def create_classifier(name):
         found = _section(data, "classifications")
         if classifier_id in found:
             raise ValueError(f"The id '{classifier_id}' is already in use")
-        found[classifier_id] = {"name": str(name).strip(), "tags": {}}
+        # enabled defaults to False deliberately: an unconfigured classifier
+        # has no type and no classes, so there is nothing yet for "enabled"
+        # to mean - and a freshly created classification should not start
+        # doing something the moment its first tag is linked.
+        found[classifier_id] = {
+            "name": str(name).strip(), "enabled": False,
+            "classification_type": None, "classes": [], "threshold": 0.8,
+            "tags": {},
+        }
         _write(data)
-    return {"id": classifier_id, "name": str(name).strip(), "tags": []}
+    return get_classifier(classifier_id)
+
+
+def configure_classifier(classifier_id, *, enabled, classification_type, classes, threshold):
+    """Set the type, classes, threshold and enabled flag that turn a bare
+    classification into one that can actually be trained and used.
+
+    Validated the same way a config file save is - config_store.validate
+    covers the whole document, so a bad value here is reported the same way
+    a bad value in the editor would be.
+
+    Mutates a deep copy, not the live cache: `load()` hands back the same
+    object every call until the file changes, so editing it in place and
+    then failing validation would leave the rejected values sitting in
+    memory - accepted by every reader, written to disk by none - until
+    something else happened to invalidate the cache.
+    """
+    with _lock:
+        data = load()
+        if classifier_id not in (data.get("classifications") or {}):
+            return None
+        candidate = copy.deepcopy(data)
+        body = candidate["classifications"][classifier_id]
+        if not isinstance(body, dict):
+            body = candidate["classifications"][classifier_id] = {"name": classifier_id}
+        body["enabled"] = bool(enabled)
+        body["classification_type"] = classification_type
+        body["classes"] = list(classes)
+        body["threshold"] = float(threshold)
+        validate(candidate)
+        _write(candidate)
+    return get_classifier(classifier_id)
 
 
 def delete_classifier(classifier_id):
@@ -475,6 +572,26 @@ def unlink_classifier_tag(classifier_id, tag_id):
         del links[tag_id]
         _write(data)
     return True
+
+
+# -- settings ---------------------------------------------------------------
+def get_settings():
+    settings = load().get("settings") or {}
+    return {"mobilenet_weights_path": settings.get("mobilenet_weights_path") or ""}
+
+
+def save_settings(mobilenet_weights_path):
+    with _lock:
+        data = load()
+        candidate = copy.deepcopy(data)
+        section = candidate.get("settings")
+        if not isinstance(section, dict):
+            section = candidate["settings"] = {}
+        path = str(mobilenet_weights_path or "").strip()
+        section["mobilenet_weights_path"] = path or None
+        validate(candidate)
+        _write(candidate)
+    return get_settings()
 
 
 # -- migration ------------------------------------------------------------

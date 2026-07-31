@@ -54,6 +54,28 @@
     .link-row { display:flex; gap:8px; margin-top:12px; max-width:420px; }
     .link-row select { flex:1; }
 
+    .model-source { background:var(--card); border:1px solid var(--line); border-radius:12px;
+                    padding:14px 16px; margin-bottom:18px; }
+    .model-source-head { margin-bottom:10px; }
+    .model-source-head strong { display:block; margin-bottom:4px; font-size:14px; }
+    .model-source-row { display:flex; gap:8px; max-width:640px; }
+    .model-source-row input { flex:1; font-size:13px; }
+
+    .configure { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
+    .configure-prompt { background:rgba(255,152,0,.10); border:1px solid rgba(255,152,0,.35);
+                        border-radius:8px; padding:10px 12px; font-size:13px; margin-top:10px; }
+    .configure-form { display:grid; gap:10px; max-width:480px; margin-top:10px; }
+    .configure-form .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
+    .configure-form label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .configure-form .tg { display:flex; align-items:center; gap:8px; font-size:13.5px; }
+    .configure-form .tg input { width:auto; }
+    .configure-actions { display:flex; gap:8px; }
+    .summary { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; font-size:13px; }
+    .summary .type-badge { border:1px solid var(--line); border-radius:999px; padding:3px 11px;
+                           color:var(--muted); text-transform:capitalize; }
+    .summary .type-badge.on { color:var(--ok); border-color:var(--ok); }
+    .summary .off { color:var(--bad); }
+
     dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
              color:var(--text); padding:0; width:min(460px,94vw); }
     dialog::backdrop { background:rgba(0,0,0,.45); }
@@ -129,6 +151,25 @@
   </script>
 
 
+  <section class="model-source">
+    <div class="model-source-head">
+      <strong>Base model</strong>
+      <span class="hint" style="margin:0">Classification training builds on MobileNetV2. If you
+        already have a copy downloaded - Frigate keeps one under its own <code>model_cache</code> -
+        point at it here to skip a second download. This only works if that path is actually
+        reachable from this add-on's own container (typically because it sits under
+        <code>/share</code> or <code>/media</code>, which can be shared between add-ons; Frigate's own
+        <code>/config</code> cannot be). Leave it blank and a copy is downloaded automatically the
+        first time something is trained.</span>
+    </div>
+    <div class="model-source-row">
+      <input id="mn-path" placeholder="/share/frigate/model_cache/MobileNet/mobilenet_v2_weights.h5"
+             autocomplete="off" spellcheck="false">
+      <button type="button" id="mn-save">Save</button>
+    </div>
+    <p class="hint" id="mn-status" style="margin-top:6px"></p>
+  </section>
+
   <div class="bar">
     <button class="primary" id="new">New classification</button>
     <span class="sub" id="count"></span>
@@ -186,6 +227,18 @@
       render();
     }
 
+    async function loadSettings() {
+      const res = await fetch(`${BASE}/api/settings`);
+      const body = await res.json().catch(() => ({}));
+      $("mn-path").value = (body.settings || {}).mobilenet_weights_path || "";
+    }
+
+    // The classification currently showing its configure form, or null when
+    // every card is showing its ordinary summary/prompt.
+    let editingConfig = null;
+
+    const TYPE_LABEL = {sub_label: "Sub label", attribute: "Attribute"};
+
     function render() {
       $("count").textContent = classifications.length
         ? `${classifications.length} classification(s)` : "";
@@ -224,8 +277,70 @@
             </select>
             <button type="button" data-link="${esc(c.id)}">Link tag</button>
           </div>` : ""}
+          <div class="configure">${configureSection(c)}</div>
         </div>`;
       }).join("");
+    }
+
+    /**
+     * Below the tag chips on every card: an unconfigured classification
+     * prompts for what it needs (type, classes, threshold) before it can
+     * learn anything; a configured one shows that as a compact summary with
+     * an Edit button, reusing the same form.
+     */
+    function configureSection(c) {
+      if (editingConfig === c.id) return configureForm(c);
+      if (!c.configured) {
+        return `
+          <div class="configure-prompt">
+            This classification is not set up yet - choose whether it assigns a
+            <strong>sub label</strong> or an <strong>attribute</strong> and list its classes before it
+            can be trained or used.
+          </div>
+          <div class="configure-actions" style="margin-top:10px">
+            <button type="button" data-configure="${esc(c.id)}">Configure</button>
+          </div>`;
+      }
+      return `
+        <div class="summary">
+          <span class="type-badge on">${esc(TYPE_LABEL[c.classification_type] || c.classification_type)}</span>
+          <span class="${c.enabled ? "" : "off"}">${c.enabled ? "Enabled" : "Disabled"}</span>
+          <span class="hint" style="margin:0">threshold ${c.threshold}</span>
+          <span class="hint" style="margin:0">&middot; classes: ${c.classes.map(esc).join(", ")}</span>
+          <button type="button" data-configure="${esc(c.id)}">Edit</button>
+        </div>`;
+    }
+
+    function configureForm(c) {
+      const type = c.classification_type || "attribute";
+      return `
+        <div class="configure-form" data-configure-form="${esc(c.id)}">
+          <label><span>Classification type</span>
+            <select data-cf-type>
+              <option value="attribute"${type === "attribute" ? " selected" : ""}>Attribute - several can be
+                true at once (a person can be wearing a helmet AND a vest)</option>
+              <option value="sub_label"${type === "sub_label" ? " selected" : ""}>Sub label - exactly one
+                answer at a time (a cat is Leo, or Charlie, or none)</option>
+            </select>
+          </label>
+          <label><span>Classes &mdash; comma separated, at least two</span>
+            <input data-cf-classes value="${esc((c.classes || []).join(", "))}"
+                   placeholder="empty, full">
+          </label>
+          <div class="row2">
+            <label><span>Threshold</span>
+              <input data-cf-threshold type="number" min="0.05" max="1" step="0.05"
+                     value="${c.threshold ?? 0.8}"></label>
+            <label class="tg" style="align-self:end">
+              <input type="checkbox" data-cf-enabled${c.enabled ? " checked" : ""}> Enabled
+            </label>
+          </div>
+          <p class="err" data-cf-err hidden></p>
+          <div class="configure-actions">
+            <button type="button" class="ghost" data-configure-cancel="${esc(c.id)}">Cancel</button>
+            <button type="button" class="primary" data-configure-save="${esc(c.id)}">Save</button>
+          </div>
+        </div>`;
     }
 
     // ---- create ----------------------------------------------------------
@@ -407,9 +522,51 @@
                     {method: "DELETE"});
         load();
       }
+      else if (t.dataset.configure) { editingConfig = t.dataset.configure; render(); }
+      else if (t.dataset.configureCancel) { editingConfig = null; render(); }
+      else if (t.dataset.configureSave) { await saveConfigure(t.dataset.configureSave); }
+      else if (t.id === "mn-save") await saveModelSource();
     });
 
+    async function saveConfigure(id) {
+      const form = document.querySelector(`[data-configure-form="${id}"]`);
+      const classes = form.querySelector("[data-cf-classes]").value
+        .split(",").map(s => s.trim()).filter(Boolean);
+      const body = {
+        classification_type: form.querySelector("[data-cf-type]").value,
+        classes,
+        threshold: Number(form.querySelector("[data-cf-threshold]").value),
+        enabled: form.querySelector("[data-cf-enabled]").checked,
+      };
+      const res = await fetch(`${BASE}/api/classifications/${id}/configure`, {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify(body),
+      });
+      const result = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        const err = form.querySelector("[data-cf-err]");
+        err.textContent = result.error || "Could not save";
+        err.hidden = false;
+        return;
+      }
+      editingConfig = null;
+      load();
+    }
+
+    async function saveModelSource() {
+      $("mn-status").textContent = "Saving…";
+      const res = await fetch(`${BASE}/api/settings`, {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({mobilenet_weights_path: $("mn-path").value}),
+      });
+      const body = await res.json().catch(() => ({}));
+      $("mn-status").textContent = res.ok
+        ? "Saved."
+        : (body.error || "Could not save.");
+    }
+
     load();
+    loadSettings();
   </script>
 </body>
 </html>

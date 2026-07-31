@@ -52,6 +52,27 @@
             border-bottom:2px solid transparent; margin-bottom:-1px; }
     nav a:hover { color:var(--text); }
     nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+
+    dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
+             color:var(--text); padding:0; width:min(440px,94vw); }
+    dialog::backdrop { background:rgba(0,0,0,.45); }
+    .dlg-head, .dlg-foot { padding:14px 18px; display:flex; gap:10px; align-items:center; }
+    .dlg-head { border-bottom:1px solid var(--line); }
+    .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .dlg-body { padding:16px 18px; }
+    .dlg-body label { display:block; }
+    .dlg-body label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .dlg-body a { color:var(--accent); }
+    button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; }
+    button:hover { filter:brightness(1.06); }
+    button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    button[disabled] { opacity:.5; cursor:not-allowed; }
+    input, select { font:inherit; font-size:14px; width:100%; padding:8px 10px;
+      border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+    .err { color:var(--bad); font-size:13px; margin:8px 0 0; }
   </style>
   <style>
     .settings-menu { margin-left:auto; position:relative; display:flex; align-items:center; }
@@ -116,6 +137,29 @@
   <div id="shots" class="shots"></div>
   <div class="loading-more" id="loading" hidden>Loading more&hellip;</div>
   <div class="sentinel" id="sentinel"></div>
+
+  <dialog id="assign-modal">
+    <div class="dlg-head"><strong style="flex:1">Assign classification</strong></div>
+    <div class="dlg-body">
+      <div id="assign-empty" class="hint" hidden>No classifications are linked to this tag yet -
+        link one from the <a href="{{ base }}/classifications">Classifications</a> tab first.</div>
+      <div id="assign-fields" hidden>
+        <label><span>Classification</span>
+          <select id="assign-classifier"></select>
+        </label>
+        <p class="hint" id="assign-type" style="margin:6px 0 0"></p>
+        <label style="margin-top:12px"><span id="assign-option-label">Value</span>
+          <select id="assign-option"></select>
+        </label>
+        <p class="hint" id="assign-note" hidden></p>
+      </div>
+      <p class="err" id="assign-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="assign-cancel">Cancel</button>
+      <button type="button" class="primary" id="assign-save" disabled>Save</button>
+    </div>
+  </dialog>
 
   <script>
     const BASE = "{{ base }}";
@@ -187,6 +231,88 @@
       }
     }
 
+    // ---- assign classification -------------------------------------------
+    const TYPE_LABEL = {sub_label: "Sub label", attribute: "Attribute"};
+    let assignFilename = null;
+
+    const $ = id => document.getElementById(id);
+
+    async function openAssignModal(filename) {
+      assignFilename = filename;
+      $("assign-err").hidden = true;
+      $("assign-save").disabled = true;
+      $("assign-fields").hidden = true;
+      $("assign-empty").hidden = true;
+      $("assign-modal").showModal();
+
+      const res = await fetch(`${BASE}/api/classifications`);
+      const body = await res.json().catch(() => ({}));
+      // Only classifications actually linked to this tag - they are the only
+      // ones with a crop telling them where in this photo to look.
+      const linked = (body.classifications || []).filter(
+        c => (c.tags || []).some(t => t.tag_id === TAG_ID));
+
+      if (!linked.length) {
+        $("assign-empty").hidden = false;
+        return;
+      }
+      $("assign-fields").hidden = false;
+      $("assign-classifier").innerHTML = linked.map(c =>
+        `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+      $("assign-classifier")._classifications = linked;
+      // The first linked classification is selected automatically - most
+      // snapshots need exactly one classification acted on, and this saves
+      // a click for the common case.
+      onClassifierChange();
+    }
+
+    function onClassifierChange() {
+      const select = $("assign-classifier");
+      const c = (select._classifications || []).find(x => x.id === select.value);
+      if (!c) return;
+      if (!c.configured) {
+        $("assign-option-label").textContent = "Value";
+        $("assign-option").innerHTML = "";
+        $("assign-type").textContent =
+          `'${c.name}' is not configured yet - set its type and classes on the Classifications tab.`;
+        $("assign-note").hidden = true;
+        $("assign-save").disabled = true;
+        return;
+      }
+      $("assign-type").textContent = `Type: ${TYPE_LABEL[c.classification_type] || c.classification_type}`;
+      $("assign-option-label").textContent =
+        c.classification_type === "sub_label" ? "Sub label" : "Attribute value";
+      $("assign-option").innerHTML = c.classes.map(cls =>
+        `<option value="${esc(cls)}">${esc(cls)}</option>`).join("");
+      $("assign-note").hidden = c.classification_type !== "sub_label";
+      $("assign-note").textContent =
+        "A tracked object can only have one sub label - if this snapshot is later " +
+        "reclassified under the same classification, the new value replaces this one.";
+      $("assign-save").disabled = false;
+    }
+
+    async function saveAssign() {
+      const select = $("assign-classifier");
+      const classificationId = select.value;
+      const label = $("assign-option").value;
+      if (!classificationId || !label) return;
+      $("assign-save").disabled = true;
+      const res = await fetch(
+        `${BASE}/api/tags/${encodeURIComponent(TAG_ID)}/snapshots/` +
+        `${encodeURIComponent(assignFilename)}/classify`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({classification_id: classificationId, label}),
+        });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("assign-err").textContent = body.error || "Could not assign that classification";
+        $("assign-err").hidden = false;
+        $("assign-save").disabled = false;
+        return;
+      }
+      $("assign-modal").close();
+    }
+
     document.addEventListener("click", e => {
       const t = e.target;
       if (t.dataset.menu !== undefined) {
@@ -197,13 +323,16 @@
         return;
       }
       if (t.dataset.assign !== undefined) {
-        // Wiring for a later step - picking a classification to attach this
-        // snapshot to as a training example. No effect yet.
         closeMenus();
+        openAssignModal(t.dataset.assign);
         return;
       }
+      if (t.id === "assign-cancel") $("assign-modal").close();
+      else if (t.id === "assign-save") saveAssign();
       if (!t.closest(".dots-anchor")) closeMenus();
     });
+
+    $("assign-classifier").addEventListener("change", onClassifierChange);
 
     loadMore();
   </script>
