@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Tags - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    .pill { font-size:12px; padding:2px 9px; border-radius:999px; border:1px solid var(--line); color:var(--muted); }
+    .pill.ok { color:var(--ok); border-color:var(--ok); }
+    .pill.bad { color:var(--bad); border-color:var(--bad); }
+    .grid { display:grid; gap:16px; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .card h2 { font-size:16px; margin:0 0 2px; font-weight:600; }
+    .model { color:var(--muted); font-size:12px; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+    table { width:100%; border-collapse:collapse; margin-top:12px; font-size:13px; }
+    td { padding:5px 0; border-bottom:1px solid var(--line); vertical-align:top; }
+    td:first-child { color:var(--muted); width:38%; }
+    td:last-child { text-align:right; font-variant-numeric:tabular-nums; }
+    .empty { background:var(--card); border:1px dashed var(--line); border-radius:12px;
+             padding:28px; text-align:center; color:var(--muted); }
+    code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px;
+           font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
+    footer { margin-top:28px; color:var(--muted); font-size:12px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .todo { margin-top:24px; }
+    .todo ul { margin:8px 0 0; padding-left:20px; }
+    .todo li { margin:3px 0; }
+  </style>
+  <style>
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .tag { margin-bottom:26px; }
+    .tag-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; margin-bottom:2px; }
+    .tag-head h2 { font-size:16px; margin:0; font-weight:600; }
+    .tag-head .slug { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                      font-size:12px; color:var(--muted); }
+    .tag-head .spacer { flex:1; }
+    .tag .sub { display:block; margin-bottom:8px; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; }
+    button.danger { color:var(--bad); border-color:var(--bad); }
+    button:hover { filter:brightness(1.06); }
+    button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    input { font:inherit; font-size:14px; width:100%; padding:8px 10px;
+      border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+    .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
+    .err { color:var(--bad); font-size:13px; margin:8px 0 0; }
+    .chips { display:flex; gap:6px; flex-wrap:wrap; margin:0 0 10px; }
+    .chip { display:inline-flex; align-items:center; border:1px solid var(--line);
+            border-radius:999px; padding:3px 11px; font-size:12.5px; color:var(--muted); }
+    .none { border-style:dashed; }
+    dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
+             color:var(--text); padding:0; width:min(440px,94vw); }
+    dialog::backdrop { background:rgba(0,0,0,.45); }
+    .dlg-head, .dlg-foot { padding:14px 18px; display:flex; gap:10px; align-items:center; }
+    .dlg-head { border-bottom:1px solid var(--line); }
+    .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .dlg-body { padding:16px 18px; }
+    .dlg-body label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .shots { display:grid; gap:12px; grid-template-columns:repeat(auto-fill,minmax(210px,1fr)); }
+    figure { margin:0; background:var(--card); border:1px solid var(--line);
+             border-radius:10px; overflow:hidden; }
+    figure a { display:block; line-height:0; }
+    figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
+    figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
+                 font-variant-numeric:tabular-nums; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks"{% if page == 'tasks' %} aria-current="page"{% endif %}>Tasks</a>
+    <a href="{{ base }}/tags"{% if page == 'tags' %} aria-current="page"{% endif %}>Tags</a>
+    <a href="{{ base }}/classifications"{% if page == 'classifications' %} aria-current="page"{% endif %}>Classifications</a>
+    <a href="{{ base }}/activity"{% if page == 'activity' %} aria-current="page"{% endif %}>Activity</a>
+  </nav>
+
+  <div class="bar">
+    <button class="primary" id="new">New tag</button>
+    <span class="sub" id="count"></span>
+  </div>
+  <div id="groups"></div>
+  <footer id="foot"></footer>
+
+  <dialog id="creator">
+    <div class="dlg-head"><strong style="flex:1">New tag</strong></div>
+    <div class="dlg-body">
+      <label><span>Name &mdash; groups the photos a task takes, e.g. "Poop check"</span>
+        <input id="t-name" placeholder="Poop check" autocomplete="off"></label>
+      <p class="hint" id="t-id"></p>
+      <p class="err" id="t-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="t-cancel">Cancel</button>
+      <button type="button" class="primary" id="t-save">Create</button>
+    </div>
+  </dialog>
+
+  <script>
+    const BASE = "{{ base }}";
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c]));
+    const finishedId = v => v.toLowerCase().replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+    let tags = [];
+
+    async function load() {
+      const res = await fetch(`${BASE}/api/tags/overview`);
+      tags = (await res.json()).tags || [];
+      render();
+    }
+
+    function render() {
+      $("count").textContent = tags.length ? `${tags.length} tag(s)` : "";
+      if (!tags.length) {
+        $("groups").innerHTML = `<div class="empty">
+          <p style="margin:0 0 6px"><strong>No tags yet</strong></p>
+          <p style="margin:0">A tag groups the photos a task takes. Create one here, or add a
+          snapshot step to a task and it will appear when the first photo lands.</p></div>`;
+        $("foot").textContent = "";
+        return;
+      }
+      $("groups").innerHTML = tags.map(t => `
+        <section class="tag">
+          <div class="tag-head">
+            <h2>${esc(t.name)}</h2>
+            <span class="slug">${esc(t.id)}</span>
+            <span class="sub" style="margin:0">${t.count} photo${t.count === 1 ? "" : "s"}</span>
+            <span class="spacer"></span>
+            <button type="button" class="danger" data-del="${esc(t.id)}"
+                    data-count="${t.count}">Delete</button>
+          </div>
+          <div class="chips">
+            ${t.classifications.length
+              ? t.classifications.map(c =>
+                  `<span class="chip" title="id: ${esc(c.id)}">${esc(c.name)}</span>`).join("")
+              : `<span class="chip none">No classifications watching this tag</span>`}
+          </div>
+          ${t.count ? `<div class="shots">
+            ${t.snapshots.map(s => `
+              <figure>
+                <a href="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}"
+                   target="_blank" rel="noopener">
+                  <img loading="lazy" alt="${esc(s.filename)}"
+                       src="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}">
+                </a>
+                <figcaption>${new Date(s.taken_at * 1000).toLocaleString()}</figcaption>
+              </figure>`).join("")}
+          </div>` : `<p class="hint" style="margin:0">No snapshots yet - a task with a
+            snapshot step using this tag will fill it.</p>`}
+        </section>`).join("");
+      const total = tags.reduce((n, t) => n + t.count, 0);
+      $("foot").textContent =
+        `${total} snapshot${total === 1 ? "" : "s"} across ${tags.length} tag${tags.length === 1 ? "" : "s"}.`;
+    }
+
+    $("t-name").addEventListener("input", () => {
+      const id = finishedId($("t-name").value);
+      $("t-id").textContent = id ? `id: ${id}` : "";
+    });
+
+    async function create() {
+      const res = await fetch(`${BASE}/api/tags`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: $("t-name").value.trim()}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("t-err").textContent = body.error || "Could not create that tag";
+        $("t-err").hidden = false;
+        return;
+      }
+      $("creator").close();
+      load();
+    }
+
+    document.addEventListener("click", async e => {
+      const t = e.target;
+      if (t.id === "new") {
+        $("t-name").value = ""; $("t-id").textContent = ""; $("t-err").hidden = true;
+        $("creator").showModal();
+      }
+      else if (t.id === "t-cancel") $("creator").close();
+      else if (t.id === "t-save") create();
+      else if (t.dataset.del) {
+        const n = Number(t.dataset.count || 0);
+        const what = n
+          ? `Delete this tag and its ${n} snapshot${n === 1 ? "" : "s"}? The photos are removed from disk.`
+          : "Delete this tag?";
+        if (!confirm(what)) return;
+        await fetch(`${BASE}/api/tags/${t.dataset.del}`, {method: "DELETE"});
+        load();
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

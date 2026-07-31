@@ -14,10 +14,11 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import time
 
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import Flask, abort, jsonify, redirect, render_template, request, send_file
 
 import ha_client
 import yaml
@@ -561,14 +562,68 @@ def _script_yaml(task, calls):
     return "\n".join(lines) + "\n"
 
 
+@app.route("/tags")
+def tags_page():
+    return render_template("tags.html", base=_ingress_base(), viewer=_viewer(), page="tags")
+
+
 @app.route("/snapshots")
-def snapshots():
-    return render_template("snapshots.html", base=_ingress_base(), viewer=_viewer(), page="snapshots")
+def snapshots_redirect():
+    """The tab this page used to be. Bookmarks keep working."""
+    return redirect(f"{_ingress_base()}/tags")
 
 
 @app.route("/api/snapshots")
 def api_snapshots():
     return jsonify({"snapshots": _snapshot_index(request.args.get("tag"))})
+
+
+@app.route("/api/tags/overview")
+def api_tags_overview():
+    """Everything the Tags page shows in one fetch: each tag with its
+    snapshots and the classifications watching it.
+
+    Driven by the tag table rather than the snapshot folders, so a tag
+    created but never photographed still appears - it is a manageable thing,
+    not just a folder that happens to exist.
+    """
+    if os.path.isdir(SNAPSHOT_ROOT):
+        store.ensure_tags(
+            name for name in os.listdir(SNAPSHOT_ROOT)
+            if os.path.isdir(os.path.join(SNAPSHOT_ROOT, name))
+        )
+    snaps = {g["tag"]: g for g in _snapshot_index()}
+    watching = {}
+    for c in store.list_classifiers():
+        for link in c["tags"]:
+            watching.setdefault(link["tag_id"], []).append(
+                {"id": c["id"], "name": c["name"]}
+            )
+    return jsonify({"tags": [
+        {
+            **tag,
+            "count": snaps.get(tag["id"], {}).get("count", 0),
+            "snapshots": snaps.get(tag["id"], {}).get("snapshots", []),
+            "classifications": watching.get(tag["id"], []),
+        }
+        for tag in store.list_tags()
+    ]})
+
+
+@app.route("/api/tags/<tag_id>", methods=["DELETE"])
+def api_delete_tag(tag_id):
+    """Delete a tag, its classifier links, and its snapshots.
+
+    The folder goes too, deliberately: leaving it would resurrect the tag on
+    the next seed from disk, which reads as a delete that did not work.
+    """
+    safe = _safe_tag(tag_id)
+    if not store.delete_tag(safe):
+        return jsonify({"error": "No such tag"}), 404
+    folder = os.path.join(SNAPSHOT_ROOT, safe)
+    if os.path.isdir(folder):
+        shutil.rmtree(folder, ignore_errors=True)
+    return jsonify({"success": True})
 
 
 @app.route("/snapshot/<tag>/<filename>")

@@ -442,6 +442,14 @@ def ensure_tags(ids):
             )
 
 
+def delete_tag(tag_id):
+    """Remove a tag and its classifier links. The caller owns the snapshot
+    folder - files are not this module's business."""
+    with _lock, _connect() as db:
+        db.execute("DELETE FROM classifier_tags WHERE tag_id = ?", (tag_id,))
+        return db.execute("DELETE FROM tags WHERE id = ?", (tag_id,)).rowcount > 0
+
+
 # -- classifications -------------------------------------------------------
 def list_classifiers():
     """Every classification, each with its tag links and their crops."""
