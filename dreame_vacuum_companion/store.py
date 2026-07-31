@@ -89,6 +89,17 @@ CREATE TABLE IF NOT EXISTS tasks (
 );
 
 CREATE INDEX IF NOT EXISTS idx_tasks_did ON tasks(did);
+
+-- Snapshot tags. Global rather than per-vacuum: "poop_check" means the same
+-- thing whichever robot takes the photo, and the snapshot folders on disk are
+-- already keyed by tag alone. The id is derived from the name and is what a
+-- step stores; renaming a tag re-derives it (the edit UI's job, later).
+CREATE TABLE IF NOT EXISTS tags (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at INTEGER,
+    updated_at INTEGER
+);
 """
 
 
@@ -304,9 +315,19 @@ def list_runs(did=None, limit=50):
 
 # -- tasks ----------------------------------------------------------------
 def slugify(value):
-    """A stable, typeable handle - this is what an automation refers to."""
-    cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
-    return cleaned.strip("_").lower()[:48]
+    """A stable, typeable handle - this is what an automation refers to.
+
+    Lowercase letters, digits and underscores only, matching what the editor
+    shows as it autofills the id from the name. Hyphens used to be allowed;
+    they now fold to underscores like every other separator, which is why
+    save accepts a previous_slug - an id that changes must rename the row,
+    not duplicate it.
+    """
+    lowered = (value or "").strip().lower()
+    cleaned = "".join(c if (c.isalnum() and c.isascii()) or c == "_" else "_" for c in lowered)
+    while "__" in cleaned:
+        cleaned = cleaned.replace("__", "_")
+    return cleaned.strip("_")[:48]
 
 
 def save_task(slug, did, name, steps):
@@ -356,6 +377,49 @@ def _task_row(row):
         "slug": row[0], "did": row[1], "name": row[2], "steps": steps,
         "created_at": row[4], "updated_at": row[5],
     }
+
+
+# -- tags -----------------------------------------------------------------
+def list_tags():
+    with _lock, _connect() as db:
+        rows = db.execute("SELECT id, name FROM tags ORDER BY name COLLATE NOCASE").fetchall()
+    return [{"id": r[0], "name": r[1]} for r in rows]
+
+
+def save_tag(name):
+    """Create (or refresh the name of) a tag. Returns it, or None for a name
+    that reduces to nothing."""
+    tag_id = slugify(name)
+    if not tag_id:
+        return None
+    now = int(time.time())
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT INTO tags (id, name, created_at, updated_at) VALUES (?,?,?,?) "
+            "ON CONFLICT(id) DO UPDATE SET name=excluded.name, updated_at=excluded.updated_at",
+            (tag_id, str(name).strip(), now, now),
+        )
+    return {"id": tag_id, "name": str(name).strip()}
+
+
+def ensure_tags(ids):
+    """Adopt tags that exist only as folders on disk.
+
+    Snapshots taken before this table existed (or via the service with an
+    ad-hoc tag) already have folders; the dropdown should offer them rather
+    than pretend they are not there. The display name is the id with its
+    underscores read as spaces - the best available guess, editable later.
+    """
+    now = int(time.time())
+    with _lock, _connect() as db:
+        for raw in ids:
+            tag_id = slugify(raw)
+            if not tag_id:
+                continue
+            db.execute(
+                "INSERT OR IGNORE INTO tags (id, name, created_at, updated_at) VALUES (?,?,?,?)",
+                (tag_id, tag_id.replace("_", " "), now, now),
+            )
 
 
 def close_orphaned_runs(did=None, summary="Abandoned - Home Assistant restarted"):

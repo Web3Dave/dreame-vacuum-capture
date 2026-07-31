@@ -1,0 +1,798 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>{{ task.name if task else "New task" }} - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+      --tool: #ff9800;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    a.back { color:var(--muted); text-decoration:none; font-size:14px; }
+    a.back:hover { color:var(--text); }
+    button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; }
+    button.danger { color:var(--bad); border-color:var(--bad); }
+    button:hover { filter:brightness(1.06); }
+    button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    button[disabled] { opacity:.45; cursor:not-allowed; }
+    input, select, textarea { font:inherit; font-size:14px; width:100%; padding:8px 10px;
+      border:1px solid var(--line); border-radius:8px; background:var(--card); color:var(--text); }
+    .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
+    .err { color:var(--bad); font-size:13px; margin:0; }
+
+    .ed-top { display:flex; align-items:center; gap:14px; margin-bottom:14px; flex-wrap:wrap; }
+    .ed-top h1 { font-size:18px; margin:0; font-weight:600; }
+    .ed-top .spacer { flex:1; }
+
+    .ed-meta { display:grid; grid-template-columns: minmax(220px, 1fr) minmax(180px, 280px);
+               gap:10px 16px; margin-bottom:14px; max-width:760px; }
+    .ed-meta label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    /* The id rides under the name it derives from - readable, quiet, editable. */
+    #t-slug { opacity:.55; font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:13px; }
+    #t-slug:focus { opacity:1; }
+
+    .ed-grid { display:grid; grid-template-columns: 1fr 340px; gap:16px; align-items:start; }
+    .pane { background:var(--card); border:1px solid var(--line); border-radius:12px; }
+
+    .map-wrap { position:relative; background:rgba(127,127,127,.08);
+                border-radius:12px 12px 0 0; min-height:200px; }
+    .map-wrap canvas { width:100%; height:auto; display:block; border-radius:12px 12px 0 0; }
+    .map-wrap canvas.armed { cursor:crosshair; }
+    .map-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
+                text-align:center; padding:24px; color:var(--muted); }
+
+    .infobar { display:flex; align-items:center; gap:10px; padding:10px 14px;
+               border-top:1px solid var(--line); min-height:52px; font-size:13.5px; }
+    .infobar .values { flex:1; min-width:0; font-variant-numeric:tabular-nums; }
+    .infobar .values.bad { color:var(--bad); }
+
+    .toolbar { display:flex; gap:8px; padding:10px 14px; border-top:1px solid var(--line);
+               flex-wrap:wrap; }
+    .tool { display:inline-flex; align-items:center; gap:7px; }
+    .tool svg { width:17px; height:17px; }
+    .tool[aria-pressed="true"] { background:var(--tool); border-color:var(--tool); color:#fff; }
+
+    .side-head { display:flex; align-items:center; gap:8px; padding:12px 14px;
+                 border-bottom:1px solid var(--line); }
+    .side-head strong { flex:1; font-size:14px; }
+    .tabs { display:flex; gap:6px; }
+    .tabs button { padding:4px 10px; font-size:13px; }
+    .tabs button[aria-pressed="true"] { background:var(--text); color:var(--bg); border-color:var(--text); }
+    .side-body { padding:10px; }
+    .side-body textarea { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px;
+                          min-height:340px; white-space:pre; }
+
+    .step-row { border:1px solid var(--line); border-radius:10px; margin-bottom:8px;
+                overflow:hidden; }
+    .step-row > .row-head { display:flex; align-items:center; gap:10px; padding:9px 12px;
+                cursor:pointer; user-select:none; }
+    .step-row > .row-head:hover { background:rgba(127,127,127,.07); }
+    .step-row.sel { border-color:var(--accent); }
+    .step-row.sel > .row-head { background:rgba(3,169,244,.10); }
+    .row-head svg { width:16px; height:16px; color:var(--muted); flex:none; }
+    .step-row.sel .row-head svg { color:var(--accent); }
+    .row-head .n { color:var(--muted); font-size:12px; width:16px; text-align:right; flex:none; }
+    .row-head .what { flex:1; min-width:0; font-size:13.5px; overflow:hidden;
+                      text-overflow:ellipsis; white-space:nowrap; }
+    .row-more { padding:10px 12px 12px; border-top:1px solid var(--line); }
+    .row-fields { display:grid; grid-template-columns:repeat(auto-fit,minmax(120px,1fr)); gap:8px; }
+    .row-fields label { font-size:12px; color:var(--muted); }
+    .row-fields label span { display:block; margin-bottom:3px; }
+    .row-fields input { padding:6px 8px; font-size:13px; }
+    .row-actions { display:flex; gap:6px; margin-top:10px; flex-wrap:wrap; }
+    .row-actions button { padding:4px 10px; font-size:12.5px; }
+    .add-row { display:flex; gap:8px; margin-top:10px; }
+    .add-row select { flex:1; }
+
+    svg { fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+
+    /* Narrow screens: the two panes become tabs rather than a squeeze. */
+    .ed-tabs { display:none; gap:6px; margin-bottom:12px; }
+    @media (max-width: 900px) {
+      .ed-grid { grid-template-columns: 1fr; }
+      .ed-tabs { display:flex; }
+      body.show-map .ed-side { display:none; }
+      body.show-steps .ed-main { display:none; }
+    }
+
+    dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
+             color:var(--text); padding:0; width:min(440px,94vw); }
+    dialog::backdrop { background:rgba(0,0,0,.45); }
+    .dlg-head, .dlg-foot { padding:14px 18px; display:flex; gap:10px; align-items:center; }
+    .dlg-head { border-bottom:1px solid var(--line); }
+    .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .dlg-body { padding:16px 18px; }
+    .dlg-body label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+  </style>
+</head>
+<body class="show-map">
+  <div class="ed-top">
+    <a class="back" id="back" href="{{ base }}/tasks">&larr; Tasks</a>
+    <h1 id="title">{{ "Edit task" if task else "New task" }}</h1>
+    <span class="spacer"></span>
+    <p class="err" id="top-err" hidden></p>
+    <button type="button" class="primary" id="save-task">Save task</button>
+  </div>
+
+  <div class="ed-meta">
+    <label><span>Name</span>
+      <input id="t-name" placeholder="My Task" autocomplete="off"></label>
+    <label><span>Vacuum</span><select id="t-did"></select></label>
+    <label><span>Id &mdash; what an automation calls</span>
+      <input id="t-slug" autocomplete="off" spellcheck="false"></label>
+  </div>
+
+  <div class="ed-tabs tabs">
+    <button type="button" data-pane="map" aria-pressed="true">Map</button>
+    <button type="button" data-pane="steps" aria-pressed="false">Steps</button>
+  </div>
+
+  <div class="ed-grid">
+    <div class="ed-main pane">
+      <div class="map-wrap" id="map-wrap">
+        <canvas id="map"></canvas>
+        <div class="map-note" id="map-note">Loading map&hellip;</div>
+      </div>
+      <div class="infobar">
+        <div class="values" id="info">Choose a tool, then click the map.</div>
+        <button type="button" class="ghost" id="draft-cancel" hidden>Cancel</button>
+        <button type="button" class="primary" id="draft-save" hidden>Save</button>
+      </div>
+      <div class="toolbar">
+        <button type="button" class="tool" id="tool-location" aria-pressed="true"
+                title="Add a go-to point">
+          <svg viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>
+          Location</button>
+        <button type="button" class="tool" id="tool-heading" aria-pressed="false"
+                title="Set the heading at the last go-to point">
+          <svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>
+          Heading</button>
+        <button type="button" class="tool" id="tool-snapshot" aria-pressed="false"
+                title="Take a snapshot at the last go-to point">
+          <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
+          Snapshot</button>
+        <button type="button" class="tool" id="tool-dock" title="Send the vacuum home">
+          <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
+          Return to dock</button>
+        <span style="flex:1"></span>
+        <button type="button" class="ghost" id="map-refresh" title="Ask the vacuum for a fresh map">Refresh map</button>
+      </div>
+    </div>
+
+    <div class="ed-side pane">
+      <div class="side-head">
+        <strong>Steps</strong>
+        <div class="tabs">
+          <button type="button" data-view="steps" aria-pressed="true">Steps</button>
+          <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
+        </div>
+      </div>
+      <div class="side-body" id="side-steps">
+        <div id="step-list"></div>
+        <div class="add-row">
+          <select id="add-type"></select>
+          <button type="button" id="add-step">Add</button>
+        </div>
+      </div>
+      <div class="side-body" id="side-yaml" hidden>
+        <p class="hint" style="margin:0 0 8px">The steps as YAML. Edits here apply when you save.</p>
+        <textarea id="t-yaml" spellcheck="false"></textarea>
+      </div>
+    </div>
+  </div>
+
+  <dialog id="tagger">
+    <div class="dlg-head"><strong style="flex:1">Snapshot tag</strong></div>
+    <div class="dlg-body">
+      <label><span>Tag &mdash; groups the photos this task takes</span>
+        <select id="tag-pick"></select></label>
+      <p class="hint" id="tag-id"></p>
+      <div id="tag-new-wrap" hidden style="margin-top:10px">
+        <label><span>New tag name</span>
+          <input id="tag-new" placeholder="Front door" autocomplete="off"></label>
+        <p class="hint" id="tag-new-id"></p>
+      </div>
+      <p class="err" id="tag-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="tag-cancel">Cancel</button>
+      <button type="button" class="primary" id="tag-save">Save</button>
+    </div>
+  </dialog>
+
+  <script>
+    const BASE = "{{ base }}";
+    const ADDON_VERSION = "{{ addon_version }}";
+    const TASK = {{ task | tojson }};
+
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c] || c));
+
+    // Icons for the step list, keyed by step type.
+    const ICONS = {
+      go_to_point: '<svg viewBox="0 0 24 24"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 1 1 16 0z"/><circle cx="12" cy="10" r="3"/></svg>',
+      rotate_to_heading: '<svg viewBox="0 0 24 24"><polyline points="23 4 23 10 17 10"/><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/></svg>',
+      take_snapshot: '<svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>',
+      return_to_dock: '<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
+      start_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
+      stop_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',
+    };
+    // Step types the toolbar owns; everything else is offered by the Add menu.
+    const TOOLBAR_TYPES = new Set(["go_to_point", "rotate_to_heading", "take_snapshot", "return_to_dock"]);
+
+    let schema = {}, devices = [], tags = [];
+    let stepsState = TASK ? JSON.parse(JSON.stringify(TASK.steps)) : [];
+    let selIndex = -1;             // selected step, -1 for none
+    let tool = "location";
+    let draft = null;              // {kind, point?, heading?, editIndex?}
+    let sideView = "steps";
+    let dirty = false;
+    let slugTouched = !!TASK;      // an existing id never auto-changes with the name
+    let mapApi = null, mapDoc = null, scale = 5, dragging = false;
+
+    // ---- name / id -------------------------------------------------------
+    // The id rule: lowercase letters, digits, underscores. Applied as you
+    // type so the field can never hold a character the server would reject.
+    const idChars = v => v.toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+    const finishedId = v => idChars(v).replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+
+    $("t-name").addEventListener("input", () => {
+      dirty = true;
+      if (!slugTouched) $("t-slug").value = finishedId($("t-name").value);
+    });
+    $("t-slug").addEventListener("input", () => {
+      dirty = true; slugTouched = true;
+      const el = $("t-slug");
+      const at = el.selectionStart;
+      const before = el.value;
+      el.value = idChars(before);
+      // Keep the caret where it was, minus whatever was stripped before it.
+      const removed = before.slice(0, at).length - idChars(before.slice(0, at)).length;
+      el.setSelectionRange(at - removed, at - removed);
+    });
+
+    // ---- boot ------------------------------------------------------------
+    async function boot() {
+      const res = await fetch(`${BASE}/api/tasks`);
+      const body = await res.json();
+      schema = body.step_types; devices = body.devices;
+      $("t-did").innerHTML = devices.map(d =>
+        `<option value="${esc(d.did)}"${TASK && TASK.did === d.did ? " selected" : ""}>${esc(d.name)}</option>`).join("");
+      $("add-type").innerHTML = Object.entries(schema)
+        .filter(([k]) => !TOOLBAR_TYPES.has(k))
+        .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
+      if (TASK) { $("t-name").value = TASK.name; $("t-slug").value = TASK.slug; }
+      await refreshTags();
+      renderSteps();
+      await loadMap(false);
+    }
+
+    async function refreshTags() {
+      try {
+        const res = await fetch(`${BASE}/api/tags`);
+        tags = (await res.json()).tags || [];
+      } catch { tags = []; }
+    }
+    const tagName = id => (tags.find(t => t.id === id) || {}).name || id;
+
+    // ---- map -------------------------------------------------------------
+    async function mapModule() {
+      if (!mapApi) {
+        mapApi = await import(`/dreame_vacuum_core/map.js?v=${ADDON_VERSION}`);
+        if (mapApi.loadSprites) await mapApi.loadSprites();
+      }
+      return mapApi;
+    }
+
+    async function loadMap(refresh) {
+      const did = $("t-did").value;
+      if (!did) return mapNote("Choose a vacuum first.");
+      mapNote(refresh ? "Asking the vacuum for a fresh map…" : "Loading map…");
+      const res = await fetch(`${BASE}/api/map/${did}${refresh ? "?refresh=1" : ""}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return mapNote(body.error || "No map available yet - try Refresh map.");
+      const docRes = await fetch(`${BASE}/map/${did}/document?v=${body.meta.updated_at || Date.now()}`);
+      if (!docRes.ok) return mapNote("This map was published by an older integration - update it and press Refresh map.");
+      try {
+        const api = await mapModule();
+        if (!api.drawHeadingHandle) {
+          return mapNote("The integration is serving an older map renderer - update it and restart Home Assistant.");
+        }
+        mapDoc = api.decodeMap(await docRes.json());
+      } catch (err) {
+        return mapNote(`Could not read the map: ${err.message}`);
+      }
+      $("map-note").hidden = true;
+      draw();
+      syncTools();
+      updateInfo();
+    }
+
+    function mapNote(text) {
+      const note = $("map-note");
+      note.hidden = false; note.textContent = text;
+    }
+
+    /**
+     * Where the vacuum would be after steps 0..upto (inclusive).
+     *
+     * The editor's whole spatial model: a heading edit or a snapshot preview
+     * happens at the last go-to point before it, or at the dock after a
+     * return_to_dock, or - before any movement step - wherever the robot
+     * actually is on the published map.
+     */
+    function contextPose(upto) {
+      let pose = {
+        x: mapDoc?.robot?.[0] ?? null, y: mapDoc?.robot?.[1] ?? null,
+        heading: mapDoc?.angle ?? null, hasPoint: false,
+      };
+      for (let i = 0; i <= upto && i < stepsState.length; i++) {
+        const s = stepsState[i];
+        if (s.type === "go_to_point" && s.x !== undefined && s.y !== undefined) {
+          pose = {x: Number(s.x), y: Number(s.y), heading: null, hasPoint: true};
+        } else if (s.type === "rotate_to_heading" && s.heading !== undefined) {
+          pose.heading = Number(s.heading);
+        } else if (s.type === "return_to_dock" && mapDoc?.dock) {
+          pose = {x: mapDoc.dock[0], y: mapDoc.dock[1],
+                  heading: mapDoc.dock_angle ?? null, hasPoint: false};
+        }
+      }
+      return pose;
+    }
+
+    function draw() {
+      if (!mapDoc || !mapApi) return;
+      const canvas = $("map");
+      const width = $("map-wrap").clientWidth;
+      scale = mapApi.fitScale ? mapApi.fitScale(mapDoc, width, {dpr: window.devicePixelRatio || 1})
+                              : (mapDoc.suggested_scale || 5);
+      if (canvas.width !== mapDoc.cols * scale) {
+        canvas.width = mapDoc.cols * scale;
+        canvas.height = mapDoc.rows * scale;
+      }
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      mapApi.drawBase(ctx, mapDoc, {scale});
+      if (mapDoc.dock) {
+        mapApi.drawDock(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1],
+                                      heading: mapDoc.dock_angle}, {scale});
+      }
+      if (mapDoc.robot) {
+        mapApi.drawVacuum(ctx, mapDoc, {x: mapDoc.robot[0], y: mapDoc.robot[1],
+                                        heading: mapDoc.angle}, {scale, fov: 0});
+      }
+
+      if (draft) return drawDraft(ctx);
+      if (selIndex >= 0) drawSelected(ctx);
+    }
+
+    function drawDraft(ctx) {
+      if (draft.kind === "location" && draft.point) {
+        mapApi.drawTarget(ctx, mapDoc, draft.point, {scale});
+      } else if (draft.kind === "heading") {
+        const pose = {...draft.base, heading: draft.heading};
+        mapApi.drawVacuum(ctx, mapDoc, pose, {scale, fov: 70, opacity: .85});
+        mapApi.drawHeadingHandle(ctx, mapDoc, pose, {scale});
+      }
+    }
+
+    /**
+     * The selected step, staged where it will actually happen: its indicator
+     * is drawn at the pose the steps before it lead to.
+     */
+    function drawSelected(ctx) {
+      const step = stepsState[selIndex];
+      if (!step) return;
+      if (step.type === "go_to_point" && step.x !== undefined) {
+        mapApi.drawTarget(ctx, mapDoc, {x: Number(step.x), y: Number(step.y)}, {scale});
+      } else if (step.type === "rotate_to_heading" && step.heading !== undefined) {
+        const pose = contextPose(selIndex - 1);
+        if (pose.x == null) return;
+        mapApi.drawVacuum(ctx, mapDoc, {...pose, heading: Number(step.heading)},
+                          {scale, fov: 70, opacity: .8});
+      } else if (step.type === "take_snapshot") {
+        const pose = contextPose(selIndex);
+        if (pose.x == null) return;
+        mapApi.drawVacuum(ctx, mapDoc, pose, {scale, fov: 70, opacity: .8});
+        mapApi.drawCameraBadge(ctx, mapDoc, pose, {scale});
+      } else if (step.type === "return_to_dock" && mapDoc.dock) {
+        mapApi.drawTarget(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1]}, {scale});
+      }
+    }
+
+    // ---- info bar --------------------------------------------------------
+    function updateInfo(text, bad) {
+      const info = $("info");
+      info.classList.toggle("bad", !!bad);
+      $("draft-save").hidden = $("draft-cancel").hidden = !draft;
+      if (text !== undefined) { info.textContent = text; return; }
+      if (draft) {
+        if (draft.kind === "location") {
+          info.textContent = draft.point
+            ? draftPointLabel() : "Click the map to choose the point.";
+          $("draft-save").disabled = !draft.point;
+        } else if (draft.kind === "heading") {
+          info.textContent = `heading ${draft.heading}° - drag the handle to aim the vacuum`;
+          $("draft-save").disabled = false;
+        }
+      } else if (selIndex >= 0 && stepsState[selIndex]) {
+        info.textContent = `Step ${selIndex + 1}: ${describe(stepsState[selIndex])}`;
+      } else {
+        info.textContent = "Choose a tool, then click the map.";
+      }
+    }
+
+    function draftPointLabel() {
+      const where = mapApi.describePoint(mapDoc, draft.point.x, draft.point.y);
+      return `x ${draft.point.x}, y ${draft.point.y} (millimetres) in ${where.name}`;
+    }
+
+    // ---- tools -----------------------------------------------------------
+    /**
+     * Heading and snapshot only mean something somewhere: at a go-to point at
+     * or before the selection. Without one they stay disabled - and location
+     * is the default tool for the same reason it is first in a task.
+     */
+    function syncTools() {
+      const anchored = contextPose(selIndex >= 0 ? selIndex : stepsState.length - 1).hasPoint;
+      $("tool-heading").disabled = !anchored;
+      $("tool-snapshot").disabled = !anchored;
+      const locating = draft ? draft.kind === "location" : tool === "location";
+      $("tool-location").setAttribute("aria-pressed", String(!!locating));
+      $("tool-heading").setAttribute("aria-pressed", String(!!draft && draft.kind === "heading"));
+      $("map").classList.toggle("armed", tool === "location" || !!draft);
+    }
+
+    function armLocation(editIndex, point) {
+      draft = {kind: "location", point: point || null,
+               editIndex: editIndex ?? null};
+      tool = "location";
+      syncTools(); updateInfo(); draw();
+    }
+
+    function armHeading(editIndex, heading) {
+      const upto = editIndex != null ? editIndex - 1
+                 : (selIndex >= 0 ? selIndex : stepsState.length - 1);
+      const base = contextPose(upto);
+      if (base.x == null) return;
+      draft = {kind: "heading", base,
+               heading: heading ?? (base.heading != null ? Math.round(base.heading) : 0),
+               editIndex: editIndex ?? null};
+      syncTools(); updateInfo(); draw();
+    }
+
+    function cancelDraft() {
+      draft = null; dragging = false;
+      syncTools(); updateInfo(); draw();
+    }
+
+    /**
+     * A saved draft becomes a step: in place when it was editing one, else
+     * inserted after the selected step so "add from here" is the default.
+     */
+    function saveDraft() {
+      if (!draft) return;
+      let step;
+      if (draft.kind === "location") {
+        if (!draft.point) return;
+        step = {type: "go_to_point", x: draft.point.x, y: draft.point.y};
+      } else if (draft.kind === "heading") {
+        step = {type: "rotate_to_heading", heading: draft.heading};
+      } else return;
+      commitStep(step, draft.editIndex);
+      draft = null;
+      syncTools(); updateInfo(); draw();
+    }
+
+    function commitStep(step, editIndex) {
+      dirty = true;
+      if (editIndex != null) {
+        stepsState[editIndex] = {...stepsState[editIndex], ...step};
+        selIndex = editIndex;
+      } else {
+        const at = selIndex >= 0 ? selIndex + 1 : stepsState.length;
+        stepsState.splice(at, 0, step);
+        selIndex = at;
+      }
+      renderSteps();
+    }
+
+    // ---- map input -------------------------------------------------------
+    function canvasPoint(event) {
+      const canvas = $("map");
+      const rect = canvas.getBoundingClientRect();
+      const ratio = canvas.width / rect.width;
+      return mapApi.pixelToWorld(
+        mapDoc, (event.clientX - rect.left) * ratio,
+        (event.clientY - rect.top) * ratio, scale);
+    }
+
+    $("map").addEventListener("pointerdown", event => {
+      if (!mapDoc || !draft || draft.kind !== "heading") return;
+      // Any drag on the map aims the vacuum - the knob is the affordance,
+      // not the only grabbable pixel, which matters on a phone.
+      dragging = true;
+      $("map").setPointerCapture(event.pointerId);
+      aimAt(event);
+    });
+    $("map").addEventListener("pointermove", event => { if (dragging) aimAt(event); });
+    $("map").addEventListener("pointerup", () => { dragging = false; });
+
+    function aimAt(event) {
+      const world = canvasPoint(event);
+      draft.heading = mapApi.headingFromPoints(draft.base, world);
+      updateInfo(); draw();
+    }
+
+    $("map").addEventListener("click", event => {
+      if (!mapDoc || (draft && draft.kind !== "location")) return;
+      if (tool !== "location" && !draft) return;
+      const point = canvasPoint(event);
+      const where = mapApi.describePoint(mapDoc, point.x, point.y);
+      if (!where.ok) {
+        updateInfo(`That is ${where.reason} - pick a spot on the floor.`, true);
+        return;
+      }
+      if (!draft) draft = {kind: "location", point: null, editIndex: null};
+      draft.point = point;
+      syncTools(); updateInfo(); draw();
+    });
+
+    // ---- steps list ------------------------------------------------------
+    function describe(step) {
+      const spec = schema[step.type] || {};
+      if (step.type === "go_to_point" && step.x !== undefined)
+        return `Go to x ${step.x}, y ${step.y}`;
+      if (step.type === "rotate_to_heading" && step.heading !== undefined)
+        return `Face ${step.heading}°`;
+      if (step.type === "take_snapshot")
+        return `Snapshot – ${tagName(step.tag || "general")}`;
+      return spec.label || step.type;
+    }
+
+    function renderSteps() {
+      const rows = stepsState.map((step, i) => {
+        const sel = i === selIndex;
+        const spec = schema[step.type] || {fields: []};
+        const fields = sel ? (spec.fields || []).map(f => `
+          <label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
+            <input data-step="${i}" data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
+                   placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`).join("") : "";
+        const mapEdit = {go_to_point: "Edit on map", rotate_to_heading: "Adjust heading",
+                         take_snapshot: "Change tag"}[step.type];
+        return `<div class="step-row${sel ? " sel" : ""}" data-row="${i}">
+          <div class="row-head" data-selrow="${i}">
+            <span class="n">${i + 1}</span>
+            ${ICONS[step.type] || ""}
+            <span class="what">${esc(describe(step))}</span>
+          </div>
+          ${sel ? `<div class="row-more">
+            ${fields ? `<div class="row-fields">${fields}</div>` : ""}
+            <div class="row-actions">
+              ${mapEdit ? `<button type="button" data-mapedit="${i}">${mapEdit}</button>` : ""}
+              <button type="button" data-up="${i}" ${i === 0 ? "disabled" : ""}>&uarr;</button>
+              <button type="button" data-down="${i}" ${i === stepsState.length - 1 ? "disabled" : ""}>&darr;</button>
+              <button type="button" class="danger" data-rm="${i}">Remove</button>
+            </div>
+          </div>` : ""}
+        </div>`;
+      }).join("");
+      $("step-list").innerHTML = rows ||
+        `<p class="hint" style="margin:4px">No steps yet. Click the map to add the first go-to point.</p>`;
+      syncTools(); updateInfo(); draw();
+    }
+
+    function collectFromUi() {
+      for (const input of document.querySelectorAll("#step-list input[data-step]")) {
+        const step = stepsState[Number(input.dataset.step)];
+        if (!step) continue;
+        const value = input.value.trim();
+        if (value === "") delete step[input.dataset.field];
+        else step[input.dataset.field] = value;
+      }
+      return stepsState;
+    }
+
+    $("step-list").addEventListener("input", () => { dirty = true; collectFromUi(); draw(); });
+
+    function selectStep(i) {
+      if (draft) cancelDraft();
+      selIndex = selIndex === i ? -1 : i;   // clicking again deselects
+      renderSteps();
+    }
+
+    // ---- snapshot tags ---------------------------------------------------
+    let tagEditIndex = null;
+
+    async function openTagger(editIndex) {
+      tagEditIndex = editIndex ?? null;
+      await refreshTags();
+      const current = editIndex != null ? (stepsState[editIndex].tag || "general") : null;
+      const known = tags.some(t => t.id === current);
+      $("tag-pick").innerHTML = [
+        ...(current && !known
+          ? [`<option value="${esc(current)}" selected>${esc(current)} (current)</option>`] : []),
+        ...tags.map(t =>
+          `<option value="${esc(t.id)}"${t.id === current ? " selected" : ""}>${esc(t.name)}</option>`),
+        `<option value="__new__">Create new tag…</option>`,
+      ].join("");
+      $("tag-new").value = "";
+      $("tag-err").hidden = true;
+      tagPickChanged();
+      $("tagger").showModal();
+    }
+
+    function tagPickChanged() {
+      const isNew = $("tag-pick").value === "__new__";
+      $("tag-new-wrap").hidden = !isNew;
+      $("tag-id").textContent = isNew ? "" : `id: ${$("tag-pick").value}`;
+      if (isNew) tagNewChanged();
+    }
+    function tagNewChanged() {
+      const id = finishedId($("tag-new").value);
+      $("tag-new-id").textContent = id ? `id: ${id}` : "";
+    }
+    $("tag-pick").addEventListener("change", tagPickChanged);
+    $("tag-new").addEventListener("input", tagNewChanged);
+
+    async function saveTag() {
+      let tagId = $("tag-pick").value;
+      if (tagId === "__new__") {
+        const name = $("tag-new").value.trim();
+        const res = await fetch(`${BASE}/api/tags`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({name}),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) {
+          $("tag-err").textContent = body.error || "Could not create that tag";
+          $("tag-err").hidden = false;
+          return;
+        }
+        tagId = body.tag.id;
+        await refreshTags();
+      }
+      $("tagger").close();
+      commitStep({type: "take_snapshot", tag: tagId}, tagEditIndex);
+      syncTools(); updateInfo(); draw();
+    }
+
+    // ---- side view / mobile panes ---------------------------------------
+    async function setSideView(next) {
+      sideView = next;
+      for (const b of document.querySelectorAll(".side-head .tabs button"))
+        b.setAttribute("aria-pressed", String(b.dataset.view === next));
+      $("side-steps").hidden = next !== "steps";
+      $("side-yaml").hidden = next !== "yaml";
+      if (next === "yaml") {
+        collectFromUi();
+        const res = await fetch(`${BASE}/api/tasks/yaml`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({steps: stepsState}),
+        });
+        $("t-yaml").value = ((await res.json()).yaml) || "";
+      }
+    }
+
+    function setPane(next) {
+      document.body.classList.toggle("show-map", next === "map");
+      document.body.classList.toggle("show-steps", next === "steps");
+      for (const b of document.querySelectorAll(".ed-tabs button"))
+        b.setAttribute("aria-pressed", String(b.dataset.pane === next));
+      if (next === "map") draw();
+    }
+
+    // ---- save ------------------------------------------------------------
+    async function saveTask() {
+      $("top-err").hidden = true;
+      let steps;
+      if (sideView === "yaml") {
+        const res = await fetch(`${BASE}/api/tasks/yaml`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({yaml: $("t-yaml").value}),
+        });
+        const parsed = await res.json();
+        if (!res.ok) return topFail(parsed.error || "Could not read that YAML");
+        steps = parsed.steps;
+      } else {
+        steps = collectFromUi();
+      }
+      const res = await fetch(`${BASE}/api/tasks`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          slug: $("t-slug").value || undefined,
+          previous_slug: TASK ? TASK.slug : undefined,
+          name: $("t-name").value.trim(),
+          did: $("t-did").value, steps,
+        }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) return topFail(body.error || `Save failed (${res.status})`);
+      dirty = false;
+      location.href = `${BASE}/tasks`;
+    }
+
+    function topFail(message) {
+      $("top-err").textContent = message;
+      $("top-err").hidden = false;
+    }
+
+    // ---- wiring ----------------------------------------------------------
+    document.addEventListener("click", e => {
+      const t = e.target.closest("button, [data-selrow]");
+      if (!t) return;
+      if (t.id === "save-task") saveTask();
+      else if (t.id === "draft-save") saveDraft();
+      else if (t.id === "draft-cancel") cancelDraft();
+      else if (t.id === "tool-location") armLocation(null, null);
+      else if (t.id === "tool-heading" && !t.disabled) armHeading(null, null);
+      else if (t.id === "tool-snapshot" && !t.disabled) openTagger(null);
+      else if (t.id === "tool-dock") { commitStep({type: "return_to_dock"}, null); }
+      else if (t.id === "map-refresh") { t.disabled = true; loadMap(true).finally(() => t.disabled = false); }
+      else if (t.id === "add-step") { commitStep({type: $("add-type").value}, null); }
+      else if (t.id === "tag-cancel") $("tagger").close();
+      else if (t.id === "tag-save") saveTag();
+      else if (t.dataset.view) setSideView(t.dataset.view);
+      else if (t.dataset.pane) setPane(t.dataset.pane);
+      else if (t.dataset.mapedit !== undefined) {
+        const i = Number(t.dataset.mapedit);
+        const step = stepsState[i];
+        setPane("map");
+        if (step.type === "go_to_point") {
+          armLocation(i, step.x !== undefined ? {x: Number(step.x), y: Number(step.y)} : null);
+        } else if (step.type === "rotate_to_heading") {
+          armHeading(i, step.heading !== undefined ? Number(step.heading) : null);
+        } else if (step.type === "take_snapshot") {
+          openTagger(i);
+        }
+      }
+      else if (t.dataset.rm !== undefined) {
+        dirty = true; collectFromUi();
+        stepsState.splice(Number(t.dataset.rm), 1);
+        if (selIndex >= stepsState.length) selIndex = stepsState.length - 1;
+        renderSteps();
+      }
+      else if (t.dataset.up !== undefined) {
+        dirty = true; collectFromUi(); const i = Number(t.dataset.up);
+        [stepsState[i - 1], stepsState[i]] = [stepsState[i], stepsState[i - 1]];
+        if (selIndex === i) selIndex = i - 1;
+        renderSteps();
+      }
+      else if (t.dataset.down !== undefined) {
+        dirty = true; collectFromUi(); const i = Number(t.dataset.down);
+        [stepsState[i + 1], stepsState[i]] = [stepsState[i], stepsState[i + 1]];
+        if (selIndex === i) selIndex = i + 1;
+        renderSteps();
+      }
+      else if (t.dataset.selrow !== undefined) {
+        collectFromUi();
+        selectStep(Number(t.dataset.selrow));
+      }
+    });
+
+    $("back").addEventListener("click", e => {
+      if (dirty && !confirm("Leave without saving? Your changes will be lost.")) {
+        e.preventDefault();
+      }
+    });
+    $("t-did").addEventListener("change", () => { dirty = true; loadMap(false); });
+
+    if (typeof ResizeObserver !== "undefined") {
+      new ResizeObserver(() => draw()).observe($("map-wrap"));
+    }
+    boot();
+  </script>
+</body>
+</html>

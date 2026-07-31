@@ -97,15 +97,6 @@
     .task ol li.at { color:var(--text); font-weight:600; }
     .task ol li.at::marker { color:var(--accent); }
     button[disabled] { opacity:.55; cursor:not-allowed; }
-    .pick-wrap { position:relative; display:inline-block; line-height:0;
-      background:rgba(127,127,127,.10); border-radius:8px; max-width:100%; }
-    .pick-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated;
-      cursor:crosshair; border-radius:8px; display:block; }
-    #picker { width:min(900px,96vw); }
-    /* The readout takes the room the buttons do not, and wraps rather than
-       pushing them off the edge on a narrow screen. */
-    .pick-foot .pick-said { flex:1; min-width:0; }
-    .pick-foot .pick-said p { margin:0; }
     pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
   </style>
@@ -128,61 +119,6 @@
   </div>
   <div id="list"></div>
 
-  <dialog id="editor">
-    <form method="dialog" onsubmit="return false">
-      <div class="dlg-head">
-        <strong style="flex:1" id="dlg-title">Task</strong>
-        <div class="tabs">
-          <button type="button" data-view="ui" aria-pressed="true">Steps</button>
-          <button type="button" data-view="yaml" aria-pressed="false">YAML</button>
-        </div>
-      </div>
-      <div class="dlg-body">
-        <div id="view-ui">
-          <label class="field"><span>Name</span><input id="t-name" placeholder="Poop check"></label>
-          <label class="field"><span>Vacuum</span><select id="t-did"></select></label>
-          <div id="steps"></div>
-          <div class="bar" style="margin:12px 0 0">
-            <select id="add-type" style="max-width:240px"></select>
-            <button type="button" id="add-step">Add step</button>
-          </div>
-        </div>
-        <div id="view-yaml" hidden>
-          <p class="hint">The task's steps as YAML. Edits here apply when you save.</p>
-          <textarea id="t-yaml" spellcheck="false"></textarea>
-        </div>
-        <p class="err" id="dlg-err" hidden></p>
-      </div>
-      <div class="dlg-foot">
-        <button type="button" class="ghost" id="cancel">Cancel</button>
-        <button type="button" class="primary" id="save">Save</button>
-      </div>
-    </form>
-  </dialog>
-
-  <dialog id="picker">
-    <div class="dlg-head">
-      <strong style="flex:1">Pick a point</strong>
-      <button type="button" class="ghost" id="pick-refresh">Refresh map</button>
-    </div>
-    <div class="dlg-body">
-      <div id="pick-wrap" class="pick-wrap">
-        <canvas id="pick-canvas"></canvas>
-      </div>
-    </div>
-    <!-- The readout sits with the buttons, outside the scrolling body: it is
-         about the point you just clicked, and scrolling the map away from the
-         coordinates it produced makes them hard to check. -->
-    <div class="dlg-foot pick-foot">
-      <div class="pick-said">
-        <p class="hint" id="pick-readout">Click the map to choose a point.</p>
-        <p class="err" id="pick-err" hidden></p>
-      </div>
-      <button type="button" class="ghost" id="pick-cancel">Cancel</button>
-      <button type="button" class="primary" id="pick-select" disabled>Select</button>
-    </div>
-  </dialog>
-
   <dialog id="exporter">
     <div class="dlg-head"><strong style="flex:1">Export to Home Assistant</strong></div>
     <div class="dlg-body">
@@ -198,17 +134,15 @@
 
   <script>
     const BASE = "{{ base }}";
-    const ADDON_VERSION = "{{ addon_version }}";
-    let schema = {}, devices = [], tasks = [], editing = null, view = "ui", stepsState = [];
-    let timer = null;
+    let schema = {}, tasks = [], timer = null;
     const $ = id => document.getElementById(id);
     const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
-      ({"&":"&amp;","<":"&lt;","}":"&gt;",">":"&gt;","\"":"&quot;"}[c] || c));
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c] || c));
 
     async function load() {
       const res = await fetch(`${BASE}/api/tasks`);
       const body = await res.json();
-      schema = body.step_types; devices = body.devices; tasks = body.tasks;
+      schema = body.step_types; tasks = body.tasks;
       renderList();
       // Poll only while something is running: the rest of the time this page
       // is static and polling would be noise.
@@ -241,7 +175,7 @@
             <span class="spacer"></span>
             <button type="button" class="primary" data-run="${esc(t.slug)}"${disabled}
                     title="${esc(title)}">${esc(runLabel)}</button>
-            <button type="button" data-edit="${esc(t.slug)}">Edit</button>
+            <a href="${BASE}/tasks/${esc(t.slug)}/edit"><button type="button">Edit</button></a>
             <button type="button" data-export="${esc(t.slug)}">Export</button>
             <button type="button" class="danger" data-del="${esc(t.slug)}"${disabled}>Delete</button>
           </div>
@@ -263,269 +197,10 @@
       return (spec.label || step.type) + (detail ? ` (${detail})` : "");
     }
 
-    function openEditor(task) {
-      editing = task;
-      $("dlg-title").textContent = task ? `Edit ${task.name}` : "New task";
-      $("t-name").value = task ? task.name : "";
-      $("t-did").innerHTML = devices.map(d =>
-        `<option value="${esc(d.did)}"${task && task.did === d.did ? " selected" : ""}>${esc(d.name)}</option>`).join("");
-      $("add-type").innerHTML = Object.entries(schema).map(([k, v]) =>
-        `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
-      stepsState = task ? JSON.parse(JSON.stringify(task.steps)) : [];
-      setView("ui");
-      renderSteps();
-      $("dlg-err").hidden = true;
-      $("editor").showModal();
-    }
-
-    function renderSteps() {
-      $("steps").innerHTML = stepsState.map((step, i) => {
-        const spec = schema[step.type] || {fields: [], label: step.type};
-        const fields = (spec.fields || []).map(f => `
-          <label class="field"><span>${esc(f.name)}${f.required ? " *" : ""}</span>
-            <input data-step="${i}" data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
-                   placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`).join("");
-        return `<div class="step">
-          <div class="step-head">
-            <strong>${i + 1}. ${esc(spec.label)}</strong>
-            <button type="button" data-up="${i}" ${i === 0 ? "disabled" : ""}>&uarr;</button>
-            <button type="button" data-down="${i}" ${i === stepsState.length - 1 ? "disabled" : ""}>&darr;</button>
-            <button type="button" class="danger" data-rm="${i}">Remove</button>
-          </div>
-          ${fields ? `<div class="grid2">${fields}</div>` : `<p class="hint">${esc(spec.help)}</p>`}
-          ${step.type === "go_to_point"
-            ? `<div class="bar" style="margin:10px 0 0"><button type="button"
-                 data-pick="${i}">Pick from map</button></div>` : ""}
-        </div>`;
-      }).join("") || `<p class="hint">No steps yet. Add one below.</p>`;
-    }
-
-    function setView(next) {
-      view = next;
-      for (const b of document.querySelectorAll(".tabs button"))
-        b.setAttribute("aria-pressed", String(b.dataset.view === next));
-      $("view-ui").hidden = next !== "ui";
-      $("view-yaml").hidden = next !== "yaml";
-      if (next === "yaml") {
-        collectFromUi();
-        fetch(`${BASE}/api/tasks/yaml`, {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({steps: stepsState}),
-        }).then(r => r.json()).then(b => { $("t-yaml").value = b.yaml || ""; });
-      }
-    }
-
-    function collectFromUi() {
-      for (const input of document.querySelectorAll("#steps input[data-step]")) {
-        const step = stepsState[Number(input.dataset.step)];
-        const value = input.value.trim();
-        if (value === "") delete step[input.dataset.field];
-        else step[input.dataset.field] = value;
-      }
-      return stepsState;
-    }
-
-    // The renderer is served by the integration, so the picker and any
-    // dashboard card share one implementation of the coordinate transform.
-    let mapApi = null, mapDoc = null, pickStep = null, picked = null;
-
-    async function mapModule() {
-      if (!mapApi) {
-        // Versioned so a browser holding yesterday's copy fetches this one.
-        // The two halves ship separately, so they will sometimes disagree -
-        // hence the capability checks below rather than assuming what the
-        // module can do.
-        mapApi = await import(`/dreame_vacuum_core/map.js?v=${ADDON_VERSION}`);
-        // Sprites for the vacuum and dock. Awaited so the first draw is the
-        // finished picture rather than shapes that swap under the cursor.
-        if (mapApi.loadSprites) await mapApi.loadSprites();
-      }
-      return mapApi;
-    }
-
-    // Said once, in the picker, rather than left as a mystery: the symptom of
-    // an old renderer is a map that draws but a chosen point that does not
-    // look like the vacuum, which reads as a bug in this page.
-    function rendererNote() {
-      return mapApi && mapApi.drawTarget ? ""
-        : " (the integration is serving an older map renderer - update it and " +
-          "restart Home Assistant to see the vacuum's footprint)";
-    }
-
-    /**
-     * The current point, described against the map now loaded, with the
-     * Select button set to match.
-     *
-     * Used for a point carried in from the step as well as a fresh click,
-     * because a coordinate saved against an older map can land in a wall or
-     * off the edge once the vacuum has re-scanned - and silently offering
-     * Select on one of those is how a task comes to drive about and give up.
-     */
-    function describePicked() {
-      const where = mapApi.describePoint(mapDoc, picked.x, picked.y);
-      $("pick-select").disabled = !where.ok;
-      if (!where.ok) {
-        return `The point already set (x ${picked.x}, y ${picked.y}) is ` +
-               `${where.reason} on this map - pick another.`;
-      }
-      return `x ${picked.x}, y ${picked.y} (millimetres) in ${where.name}` + rendererNote();
-    }
-
-    function drawPicker() {
-      if (!mapDoc) return;
-      const canvas = $("pick-canvas");
-      const scale = mapDoc.suggested_scale || 5;
-      canvas.width = mapDoc.cols * scale;
-      canvas.height = mapDoc.rows * scale;
-      const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      // No room names: they are placeholders ("Room 3") until the map's
-      // rism blob is decoded, and they cover the floor being clicked. The
-      // readout names the room on click, which is when it is wanted.
-      mapApi.drawBase(ctx, mapDoc, {scale});
-      if (mapDoc.dock && mapApi.drawDock) {
-        mapApi.drawDock(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1],
-                                      heading: mapDoc.dock_angle}, {scale});
-      }
-      if (mapDoc.robot) {
-        mapApi.drawVacuum(ctx, mapDoc, {x: mapDoc.robot[0], y: mapDoc.robot[1],
-                                        heading: mapDoc.angle}, {scale});
-      }
-      // The chosen point is drawn as the machine standing on it, at its real
-      // 320mm width - a dot says where the coordinate is, this says what
-      // picking it means, and a target too tight to fit looks wrong here
-      // rather than after the vacuum has been driven at it.
-      if (picked) {
-        if (mapApi.drawTarget) mapApi.drawTarget(ctx, mapDoc, picked, {scale});
-        else mapApi.drawMarker(ctx, mapDoc, picked, {scale});
-      }
-    }
-
-    function stepDid() { return $("t-did").value; }
-
-    async function openPicker(index) {
-      pickStep = index;
-      // Open on the point the step already has, rather than blank: most
-      // visits to this dialog are to adjust a coordinate, not invent one,
-      // and starting from nothing hides what is being changed.
-      const step = stepsState[index] || {};
-      picked = (step.x === "" || step.x == null || step.y === "" || step.y == null)
-        ? null : {x: Number(step.x), y: Number(step.y)};
-      $("pick-select").disabled = picked === null;
-      $("pick-err").hidden = true;
-      $("pick-readout").textContent = "Loading map...";
-      $("picker").showModal();
-      await loadMap(false);
-    }
-
-    async function loadMap(refresh) {
-      const did = stepDid();
-      if (!did) return pickFail("Choose a vacuum for this task first.");
-      $("pick-readout").textContent = refresh ? "Asking the vacuum for a fresh map..." : "Loading map...";
-      const res = await fetch(`${BASE}/api/map/${did}${refresh ? "?refresh=1" : ""}`);
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) return pickFail(body.error || "No map available yet.");
-
-      const docRes = await fetch(`${BASE}/map/${did}/document?v=${body.meta.updated_at || Date.now()}`);
-      if (!docRes.ok) return pickFail("This map was published by an older version - press Refresh map.");
-      try {
-        const api = await mapModule();
-        mapDoc = api.decodeMap(await docRes.json());
-      } catch (err) {
-        return pickFail(`Could not read the map: ${err.message}`);
-      }
-      $("pick-err").hidden = true;
-      // A point carried in from the step is described against the map that
-      // has just arrived - which is also how a coordinate left over from an
-      // older, differently-shaped map shows itself as off-map or in a wall.
-      $("pick-readout").textContent = picked ? describePicked() 
-                                             : "Click the map to choose a point.";
-      drawPicker();
-    }
-
-    function pickFail(message) {
-      $("pick-err").textContent = message;
-      $("pick-err").hidden = false;
-      $("pick-readout").textContent = "";
-    }
-
-    function onMapClick(event) {
-      if (!mapDoc) return;
-      const canvas = $("pick-canvas");
-      const rect = canvas.getBoundingClientRect();
-      // The canvas is displayed at whatever width fits, so translate into its
-      // own pixels before asking the shared module for a coordinate.
-      const ratio = canvas.width / rect.width;
-      const point = mapApi.pixelToWorld(
-        mapDoc, (event.clientX - rect.left) * ratio,
-        (event.clientY - rect.top) * ratio, mapDoc.suggested_scale || 5);
-
-      const where = mapApi.describePoint(mapDoc, point.x, point.y);
-      if (!where.ok) {
-        // Selecting a wall produces a task that drives about and gives up,
-        // with nothing to say why - so refuse it here instead.
-        picked = null;
-        $("pick-select").disabled = true;
-        $("pick-readout").textContent = `That is ${where.reason} - pick a spot on the floor.`;
-        drawPicker();
-        return;
-      }
-      picked = point;
-      $("pick-readout").textContent = describePicked();
-      drawPicker();
-    }
-
-    async function save() {
-      let steps;
-      if (view === "yaml") {
-        const res = await fetch(`${BASE}/api/tasks/yaml`, {
-          method: "POST", headers: {"Content-Type": "application/json"},
-          body: JSON.stringify({yaml: $("t-yaml").value}),
-        });
-        const parsed = await res.json();
-        if (!res.ok) return fail(parsed.error || "Could not read that YAML");
-        steps = parsed.steps;
-      } else {
-        steps = collectFromUi();
-      }
-      const res = await fetch(`${BASE}/api/tasks`, {
-        method: "POST", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({
-          slug: editing ? editing.slug : undefined,
-          name: $("t-name").value.trim(), did: $("t-did").value, steps,
-        }),
-      });
-      const body = await res.json().catch(() => ({}));
-      if (!res.ok) return fail(body.error || `Save failed (${res.status})`);
-      $("editor").close();
-      load();
-    }
-
-    function fail(message) {
-      $("dlg-err").textContent = message;
-      $("dlg-err").hidden = false;
-      return false;
-    }
-
     document.addEventListener("click", async e => {
       const t = e.target;
-      if (t.id === "new") openEditor(null);
-      else if (t.id === "cancel") $("editor").close();
-      else if (t.id === "save") save();
-      else if (t.dataset.view) setView(t.dataset.view);
-      else if (t.id === "add-step") {
-        stepsState.push({type: $("add-type").value}); renderSteps();
-      } else if (t.dataset.rm !== undefined) {
-        collectFromUi(); stepsState.splice(Number(t.dataset.rm), 1); renderSteps();
-      } else if (t.dataset.up !== undefined) {
-        collectFromUi(); const i = Number(t.dataset.up);
-        [stepsState[i - 1], stepsState[i]] = [stepsState[i], stepsState[i - 1]]; renderSteps();
-      } else if (t.dataset.down !== undefined) {
-        collectFromUi(); const i = Number(t.dataset.down);
-        [stepsState[i + 1], stepsState[i]] = [stepsState[i], stepsState[i + 1]]; renderSteps();
-      } else if (t.dataset.edit) {
-        openEditor(tasks.find(x => x.slug === t.dataset.edit));
-      } else if (t.dataset.del) {
+      if (t.id === "new") location.href = `${BASE}/tasks/new`;
+      else if (t.dataset.del) {
         if (!confirm(`Delete ${t.dataset.del}?`)) return;
         await fetch(`${BASE}/api/tasks/${t.dataset.del}`, {method: "DELETE"});
         load();
@@ -543,20 +218,6 @@
         const body = await res.json();
         $("export-yaml").textContent = body.yaml || body.error || "Nothing to export";
         $("exporter").showModal();
-      } else if (t.dataset.pick !== undefined) {
-        collectFromUi(); openPicker(Number(t.dataset.pick));
-      } else if (t.id === "pick-cancel") $("picker").close();
-      else if (t.id === "pick-refresh") {
-        t.disabled = true;
-        await loadMap(true);
-        t.disabled = false;
-      } else if (t.id === "pick-select") {
-        if (picked !== null && pickStep !== null) {
-          stepsState[pickStep].x = picked.x;
-          stepsState[pickStep].y = picked.y;
-          renderSteps();
-        }
-        $("picker").close();
       } else if (t.id === "export-close") $("exporter").close();
       else if (t.id === "export-copy") {
         navigator.clipboard?.writeText($("export-yaml").textContent);
@@ -564,7 +225,6 @@
       }
     });
 
-    $("pick-canvas").addEventListener("click", onMapClick);
     load();
   </script>
 </body>

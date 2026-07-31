@@ -204,6 +204,45 @@ def tasks():
                            page="tasks", addon_version=ADDON_VERSION)
 
 
+@app.route("/tasks/new")
+def task_new():
+    return render_template("task_editor.html", base=_ingress_base(), viewer=_viewer(),
+                           page="tasks", addon_version=ADDON_VERSION, task=None)
+
+
+@app.route("/tasks/<slug>/edit")
+def task_edit(slug):
+    """A real URL rather than a modal: refresh keeps your place, the browser
+    back button is honest navigation, and an edit screen can be linked to."""
+    task = store.get_task(slug)
+    if not task:
+        abort(404)
+    return render_template("task_editor.html", base=_ingress_base(), viewer=_viewer(),
+                           page="tasks", addon_version=ADDON_VERSION, task=task)
+
+
+@app.route("/api/tags")
+def api_tags():
+    # Folders on disk are tags in practice - snapshots taken before the table
+    # existed, or via the service with an ad-hoc tag. Adopt them so the
+    # dropdown offers what the media browser already shows.
+    if os.path.isdir(SNAPSHOT_ROOT):
+        store.ensure_tags(
+            name for name in os.listdir(SNAPSHOT_ROOT)
+            if os.path.isdir(os.path.join(SNAPSHOT_ROOT, name))
+        )
+    return jsonify({"tags": store.list_tags()})
+
+
+@app.route("/api/tags", methods=["POST"])
+def api_create_tag():
+    body = request.get_json(silent=True) or {}
+    tag = store.save_tag(body.get("name") or "")
+    if not tag:
+        return jsonify({"error": "A tag needs letters or numbers in its name"}), 400
+    return jsonify({"tag": tag})
+
+
 def _busy_by_device():
     """What each vacuum is doing, from the integration's own live state.
 
@@ -307,11 +346,23 @@ def api_save_task():
     slug = store.slugify(body.get("slug") or body["name"])
     if not slug:
         return jsonify({"error": "Use letters or numbers in the name"}), 400
+    # The id is editable, so two cases need telling apart: a *new* task whose
+    # id collides with an existing one (refused - saving would silently
+    # overwrite someone else's task), and an *edit* that changed the id
+    # (allowed - the old row is renamed away, because an automation calls a
+    # task by id and a duplicate under the old id would keep answering).
+    previous = store.slugify(body.get("previous_slug") or "")
+    if not previous and store.get_task(slug):
+        return jsonify({"error": f"The id '{slug}' is already in use"}), 409
+    if previous and previous != slug and store.get_task(slug):
+        return jsonify({"error": f"The id '{slug}' is already in use"}), 409
     try:
         validated = step_schema.validate_steps(body["steps"])
     except step_schema.StepError as err:
         return jsonify({"error": str(err)}), 400
     store.save_task(slug, body["did"], body["name"], validated)
+    if previous and previous != slug:
+        store.delete_task(previous)
     return jsonify({"task": store.get_task(slug)})
 
 
