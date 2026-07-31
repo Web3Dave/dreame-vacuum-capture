@@ -323,7 +323,12 @@
     let mapApi = null, mapDoc = null, pickStep = null, picked = null;
 
     async function mapModule() {
-      if (!mapApi) mapApi = await import("/dreame_vacuum_core/map.js");
+      if (!mapApi) {
+        mapApi = await import("/dreame_vacuum_core/map.js");
+        // Sprites for the vacuum and dock. Awaited so the first draw is the
+        // finished picture rather than shapes that swap under the cursor.
+        await mapApi.loadSprites();
+      }
       return mapApi;
     }
 
@@ -336,11 +341,21 @@
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       mapApi.drawBase(ctx, mapDoc, {scale, showRoomNames: $("pick-names").checked});
+      if (mapDoc.dock) {
+        mapApi.drawDock(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1],
+                                      heading: mapDoc.dock_angle}, {scale});
+      }
       if (mapDoc.robot) {
         mapApi.drawVacuum(ctx, mapDoc, {x: mapDoc.robot[0], y: mapDoc.robot[1],
                                         heading: mapDoc.angle}, {scale});
       }
-      if (picked) mapApi.drawMarker(ctx, mapDoc, picked, {scale});
+      if (picked) {
+        // The machine drawn where it would end up, at its real 320mm width,
+        // so a point that looks clear but is too tight to stand in shows as
+        // one before the task is saved. No cone: it has no heading yet.
+        mapApi.drawVacuum(ctx, mapDoc, picked, {scale, fov: 0, opacity: .55});
+        mapApi.drawMarker(ctx, mapDoc, picked, {scale});
+      }
     }
 
     function stepDid() { return $("t-did").value; }
