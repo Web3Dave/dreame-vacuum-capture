@@ -610,6 +610,20 @@ def api_tags_overview():
     ]})
 
 
+@app.route("/api/tags/<tag_id>", methods=["PATCH"])
+def api_rename_tag(tag_id):
+    """Rename a tag. The id (the folder name, and what a step's tag field
+    stores) does not change - see store.rename_tag for why."""
+    body = request.get_json(silent=True) or {}
+    safe = _safe_tag(tag_id)
+    if not any(t["id"] == safe for t in store.list_tags()):
+        return jsonify({"error": "No such tag"}), 404
+    tag = store.rename_tag(safe, body.get("name") or "")
+    if not tag:
+        return jsonify({"error": "A tag needs letters or numbers in its name"}), 400
+    return jsonify({"tag": tag})
+
+
 @app.route("/api/tags/<tag_id>", methods=["DELETE"])
 def api_delete_tag(tag_id):
     """Delete a tag, its classifier links, and its snapshots.

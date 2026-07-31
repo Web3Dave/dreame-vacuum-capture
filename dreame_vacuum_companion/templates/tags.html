@@ -112,14 +112,30 @@
   <dialog id="creator">
     <div class="dlg-head"><strong style="flex:1">New tag</strong></div>
     <div class="dlg-body">
-      <label><span>Name &mdash; groups the photos a task takes, e.g. "Poop check"</span>
-        <input id="t-name" placeholder="Poop check" autocomplete="off"></label>
+      <label><span>Name &mdash; groups the photos a task takes</span>
+        <input id="t-name" placeholder="My Tag" autocomplete="off"></label>
       <p class="hint" id="t-id"></p>
       <p class="err" id="t-err" hidden></p>
     </div>
     <div class="dlg-foot">
       <button type="button" class="ghost" id="t-cancel">Cancel</button>
       <button type="button" class="primary" id="t-save">Create</button>
+    </div>
+  </dialog>
+
+  <dialog id="renamer">
+    <div class="dlg-head"><strong style="flex:1">Rename tag</strong></div>
+    <div class="dlg-body">
+      <label><span>Name</span>
+        <input id="r-name" placeholder="My Tag" autocomplete="off"></label>
+      <p class="hint">The id (<code id="r-id"></code>) stays the same, since it is the
+        folder snapshots are saved under and what a task step refers to. Only the name shown
+        here changes.</p>
+      <p class="err" id="r-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="r-cancel">Cancel</button>
+      <button type="button" class="primary" id="r-save">Save</button>
     </div>
   </dialog>
 
@@ -155,6 +171,7 @@
             <span class="slug">${esc(t.id)}</span>
             <span class="sub" style="margin:0">${t.count} photo${t.count === 1 ? "" : "s"}</span>
             <span class="spacer"></span>
+            <button type="button" data-edit="${esc(t.id)}" data-name="${esc(t.name)}">Edit</button>
             <button type="button" class="danger" data-del="${esc(t.id)}"
                     data-count="${t.count}">Delete</button>
           </div>
@@ -202,6 +219,24 @@
       load();
     }
 
+    // The tag id being renamed, while the dialog is open.
+    let renaming = null;
+
+    async function rename() {
+      const res = await fetch(`${BASE}/api/tags/${renaming}`, {
+        method: "PATCH", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: $("r-name").value.trim()}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("r-err").textContent = body.error || "Could not rename that tag";
+        $("r-err").hidden = false;
+        return;
+      }
+      $("renamer").close();
+      load();
+    }
+
     document.addEventListener("click", async e => {
       const t = e.target;
       if (t.id === "new") {
@@ -210,6 +245,15 @@
       }
       else if (t.id === "t-cancel") $("creator").close();
       else if (t.id === "t-save") create();
+      else if (t.dataset.edit) {
+        renaming = t.dataset.edit;
+        $("r-name").value = t.dataset.name;
+        $("r-id").textContent = renaming;
+        $("r-err").hidden = true;
+        $("renamer").showModal();
+      }
+      else if (t.id === "r-cancel") $("renamer").close();
+      else if (t.id === "r-save") rename();
       else if (t.dataset.del) {
         const n = Number(t.dataset.count || 0);
         const what = n

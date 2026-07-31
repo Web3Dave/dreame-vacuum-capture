@@ -442,6 +442,24 @@ def ensure_tags(ids):
             )
 
 
+def rename_tag(tag_id, name):
+    """Change a tag's display name. The id is untouched deliberately: it is
+    the snapshot folder name and what a task step's tag field stores, so
+    changing it would orphan every photo already taken and every step that
+    references it. Returns the updated tag, or None if the name is empty or
+    the tag does not exist."""
+    name = str(name or "").strip()
+    if not name:
+        return None
+    now = int(time.time())
+    with _lock, _connect() as db:
+        updated = db.execute(
+            "UPDATE tags SET name = ?, updated_at = ? WHERE id = ?",
+            (name, now, tag_id),
+        ).rowcount
+    return {"id": tag_id, "name": name} if updated else None
+
+
 def delete_tag(tag_id):
     """Remove a tag and its classifier links. The caller owns the snapshot
     folder - files are not this module's business."""
