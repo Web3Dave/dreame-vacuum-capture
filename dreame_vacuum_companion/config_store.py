@@ -39,6 +39,15 @@ TOP_LEVEL_KEYS = ("tags", "tasks", "classifications", "settings")
 # fact replacing the last" vs "are these facts that can coexist".
 CLASSIFICATION_TYPES = ("sub_label", "attribute")
 
+# What classify_train / classify_infer can actually run on today. Frigate
+# offers a real choice here (cpu, onnx, openvino, edgetpu, hailo, ...)
+# because it ships a plugin per backend; this add-on has one working path -
+# TensorFlow Lite on CPU - so that is the only value this will accept. Kept
+# as a real set rather than a single hardcoded string so adding a second
+# backend later is a matter of implementing it and appending here, not
+# reworking how the setting is stored or validated.
+SUPPORTED_DEVICES = ("cpu",)
+
 STARTER_CONFIG = """\
 # Dreame Vacuum Companion configuration.
 #
@@ -260,9 +269,19 @@ def validate(data: dict) -> None:
     settings = data.get("settings") or {}
     if not isinstance(settings, dict):
         problems.append("settings: must be a mapping")
-    elif "mobilenet_weights_path" in settings and settings["mobilenet_weights_path"] is not None:
-        if not isinstance(settings["mobilenet_weights_path"], str):
-            problems.append("settings.mobilenet_weights_path: must be a text path")
+    else:
+        if "mobilenet_weights_path" in settings and settings["mobilenet_weights_path"] is not None:
+            if not isinstance(settings["mobilenet_weights_path"], str):
+                problems.append("settings.mobilenet_weights_path: must be a text path")
+        device = settings.get("device")
+        if device is not None and device not in SUPPORTED_DEVICES:
+            # Validated here too, not just left to the dropdown to enforce -
+            # an API call can bypass a disabled <option> the UI would never
+            # let a person pick.
+            problems.append(
+                f"settings.device: '{device}' is not available in this add-on "
+                f"yet. Supported: {', '.join(SUPPORTED_DEVICES)}"
+            )
 
     if problems:
         raise ConfigError("\n".join(problems))
@@ -577,10 +596,13 @@ def unlink_classifier_tag(classifier_id, tag_id):
 # -- settings ---------------------------------------------------------------
 def get_settings():
     settings = load().get("settings") or {}
-    return {"mobilenet_weights_path": settings.get("mobilenet_weights_path") or ""}
+    return {
+        "mobilenet_weights_path": settings.get("mobilenet_weights_path") or "",
+        "device": settings.get("device") or "cpu",
+    }
 
 
-def save_settings(mobilenet_weights_path):
+def save_settings(mobilenet_weights_path, device=None):
     with _lock:
         data = load()
         candidate = copy.deepcopy(data)
@@ -589,6 +611,7 @@ def save_settings(mobilenet_weights_path):
             section = candidate["settings"] = {}
         path = str(mobilenet_weights_path or "").strip()
         section["mobilenet_weights_path"] = path or None
+        section["device"] = device or "cpu"
         validate(candidate)
         _write(candidate)
     return get_settings()

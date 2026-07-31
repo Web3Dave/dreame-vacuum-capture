@@ -24,6 +24,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 import ha_client
 import yaml
 
+import classify_download
 import classify_store
 import classify_train
 import config_store
@@ -823,23 +824,48 @@ def api_settings():
 
 @app.route("/api/settings", methods=["PUT"])
 def api_save_settings():
-    """The one add-on-wide model setting so far: where to look for a
-    MobileNetV2 weights file Frigate (or an earlier training run here) has
-    already downloaded, so training does not fetch its own copy.
+    """Add-on-wide model settings: which device runs training/inference (only
+    "cpu" actually does anything yet - see config_store.SUPPORTED_DEVICES),
+    and where to look for a MobileNetV2 weights file Frigate (or an earlier
+    training run here) has already downloaded, so training does not fetch
+    its own copy.
 
-    Worth being honest about what this can and cannot do: Home Assistant add-
-    ons are separate containers with separate filesystems, so this only finds
-    anything if the path given is actually reachable from inside this
-    container - typically because it was placed under /share or /media,
-    which can be mounted into more than one add-on, not Frigate's own /config,
-    which cannot.
+    Worth being honest about what the weights path can and cannot do: Home
+    Assistant add-ons are separate containers with separate filesystems, so
+    this only finds anything if the path given is actually reachable from
+    inside this container - typically because it was placed under /share or
+    /media, which can be mounted into more than one add-on, not Frigate's own
+    /config, which cannot.
     """
     body = request.get_json(silent=True) or {}
     try:
-        settings = config_store.save_settings(body.get("mobilenet_weights_path"))
+        settings = config_store.save_settings(
+            body.get("mobilenet_weights_path"), body.get("device"),
+        )
     except config_store.ConfigError as err:
         return jsonify({"error": str(err)}), 400
     return jsonify({"settings": settings})
+
+
+@app.route("/api/settings/devices")
+def api_settings_devices():
+    """What device values are actually usable, for the dropdown to grey out
+    everything else rather than let a person pick something that quietly
+    does nothing."""
+    return jsonify({"supported": list(config_store.SUPPORTED_DEVICES)})
+
+
+@app.route("/api/settings/model/status")
+def api_model_status():
+    """Whether the shared MobileNetV2 base weights are cached yet - what the
+    Base model panel's Download button and status line poll."""
+    return jsonify({"status": classify_download.read_status()})
+
+
+@app.route("/api/settings/model/download", methods=["POST"])
+def api_model_download():
+    started, message = classify_download.start_download()
+    return jsonify({"success": started, "message": message}), (200 if started else 400)
 
 
 @app.route("/api/config/raw")

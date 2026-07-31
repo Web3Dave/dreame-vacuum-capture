@@ -58,8 +58,13 @@
                     padding:14px 16px; margin-bottom:18px; }
     .model-source-head { margin-bottom:10px; }
     .model-source-head strong { display:block; margin-bottom:4px; font-size:14px; }
-    .model-source-row { display:flex; gap:8px; max-width:640px; }
-    .model-source-row input { flex:1; font-size:13px; }
+    .model-source-field { margin-top:14px; padding-top:14px; border-top:1px solid var(--line); }
+    .model-source-field:first-of-type { margin-top:10px; padding-top:10px; }
+    .model-source-field > label span { display:block; font-size:12px; color:var(--muted);
+                                       margin-bottom:4px; font-weight:600; }
+    .model-source-row { display:flex; gap:8px; max-width:640px; align-items:center; }
+    .model-source-row input, .model-source-row select { flex:1; font-size:13px; }
+    .model-source-row select { max-width:280px; }
 
     .configure { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
     .configure-prompt { background:rgba(255,152,0,.10); border:1px solid rgba(255,152,0,.35);
@@ -155,20 +160,52 @@
 
   <section class="model-source">
     <div class="model-source-head">
-      <strong>Base model</strong>
-      <span class="hint" style="margin:0">Classification training builds on MobileNetV2. If you
-        already have a copy downloaded - Frigate keeps one under its own <code>model_cache</code> -
-        point at it here to skip a second download. This only works if that path is actually
-        reachable from this add-on's own container (typically because it sits under
-        <code>/share</code> or <code>/media</code>, which can be shared between add-ons; Frigate's own
-        <code>/config</code> cannot be). Leave it blank and a copy is downloaded automatically the
-        first time something is trained.</span>
+      <strong>Base model &amp; hardware</strong>
+      <span class="hint" style="margin:0">Classification training and inference build on
+        MobileNetV2, run through TensorFlow Lite.</span>
     </div>
-    <div class="model-source-row">
-      <input id="mn-path" placeholder="/share/frigate/model_cache/MobileNet/mobilenet_v2_weights.h5"
-             autocomplete="off" spellcheck="false">
-      <button type="button" id="mn-save">Save</button>
+
+    <div class="model-source-field">
+      <label><span>Device</span></label>
+      <div class="model-source-row">
+        <select id="mn-device">
+          <option value="cpu">CPU (TensorFlow Lite)</option>
+          <option value="gpu" disabled>GPU - not supported yet</option>
+          <option value="openvino" disabled>OpenVINO - not supported yet</option>
+          <option value="edgetpu" disabled>Coral EdgeTPU - not supported yet</option>
+        </select>
+      </div>
+      <p class="hint" style="margin-top:4px">CPU is the only device this add-on can actually use
+        right now - the others are listed so it is clear what is not yet possible, rather than
+        hiding the question.</p>
     </div>
+
+    <div class="model-source-field">
+      <label><span>Base weights</span></label>
+      <div class="model-source-row">
+        <button type="button" id="mn-download" disabled>Download now</button>
+        <span class="hint" id="mn-model-status" style="margin:0"></span>
+      </div>
+      <p class="hint" style="margin-top:4px">Downloaded automatically the first time something is
+        trained if you skip this - this button just makes that wait visible up front instead, and
+        caches under this add-on's own persistent storage so it only happens once.</p>
+    </div>
+
+    <div class="model-source-field">
+      <label><span>Reuse an existing copy instead</span></label>
+      <div class="model-source-row">
+        <input id="mn-path" placeholder="/share/frigate/model_cache/MobileNet/mobilenet_v2_weights.h5"
+               autocomplete="off" spellcheck="false">
+        <button type="button" id="mn-save">Save</button>
+      </div>
+      <p class="hint" style="margin-top:4px">If you already have a copy downloaded - Frigate keeps
+        one under its own <code>model_cache</code> - point at it here to skip the download above.
+        This only works if that path is actually reachable from this add-on's own container
+        (typically because it sits under <code>/share</code> or <code>/media</code>, which can be
+        shared between add-ons; Frigate's own <code>/config</code> cannot be). Leave it blank to use
+        the download above instead.</p>
+    </div>
+
     <p class="hint" id="mn-status" style="margin-top:6px"></p>
   </section>
 
@@ -233,6 +270,44 @@
       const res = await fetch(`${BASE}/api/settings`);
       const body = await res.json().catch(() => ({}));
       $("mn-path").value = (body.settings || {}).mobilenet_weights_path || "";
+      $("mn-device").value = (body.settings || {}).device || "cpu";
+      refreshModelStatus();
+    }
+
+    // ---- base model download ------------------------------------------------
+    let modelPoll = null;
+
+    async function refreshModelStatus() {
+      const res = await fetch(`${BASE}/api/settings/model/status`);
+      const body = await res.json().catch(() => ({}));
+      const status = body.status || {state: "none"};
+      const el = $("mn-model-status");
+      const btn = $("mn-download");
+
+      if (status.state === "downloading") {
+        el.textContent = "Downloading… this only has to happen once.";
+        btn.disabled = true; btn.textContent = "Downloading…";
+      } else if (status.state === "ready") {
+        const when = status.finished_at ? new Date(status.finished_at * 1000).toLocaleString() : "";
+        el.textContent = `Ready${when ? ` · downloaded ${when}` : ""}`;
+        btn.disabled = false; btn.textContent = "Download again";
+      } else if (status.state === "failed") {
+        el.textContent = `Download failed: ${status.error || "unknown error"}`;
+        btn.disabled = false; btn.textContent = "Retry download";
+      } else {
+        el.textContent = "Not downloaded yet.";
+        btn.disabled = false; btn.textContent = "Download now";
+      }
+
+      clearTimeout(modelPoll);
+      if (status.state === "downloading") modelPoll = setTimeout(refreshModelStatus, 2500);
+    }
+
+    async function startModelDownload() {
+      const res = await fetch(`${BASE}/api/settings/model/download`, {method: "POST"});
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(body.message || "Could not start the download"); return; }
+      refreshModelStatus();
     }
 
     // The classification currently showing its configure form, or null when
@@ -591,7 +666,10 @@
       else if (t.dataset.configureSave) { await saveConfigure(t.dataset.configureSave); }
       else if (t.dataset.train) { t.disabled = true; await startTraining(t.dataset.train); }
       else if (t.id === "mn-save") await saveModelSource();
+      else if (t.id === "mn-download") { t.disabled = true; await startModelDownload(); }
     });
+
+    $("mn-device").addEventListener("change", saveModelSource);
 
     async function saveConfigure(id) {
       const form = document.querySelector(`[data-configure-form="${id}"]`);
@@ -622,7 +700,10 @@
       $("mn-status").textContent = "Saving…";
       const res = await fetch(`${BASE}/api/settings`, {
         method: "PUT", headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({mobilenet_weights_path: $("mn-path").value}),
+        body: JSON.stringify({
+          mobilenet_weights_path: $("mn-path").value,
+          device: $("mn-device").value,
+        }),
       });
       const body = await res.json().catch(() => ({}));
       $("mn-status").textContent = res.ok
