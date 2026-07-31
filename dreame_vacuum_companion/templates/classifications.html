@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classifications - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    button { font:inherit; font-size:14px; padding:7px 14px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button.ghost { background:transparent; }
+    button.danger { color:var(--bad); border-color:var(--bad); }
+    button:hover { filter:brightness(1.06); }
+    button:focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
+    button[disabled] { opacity:.5; cursor:not-allowed; }
+    input, select { font:inherit; font-size:14px; width:100%; padding:8px 10px;
+      border:1px solid var(--line); border-radius:8px; background:var(--bg); color:var(--text); }
+    .hint { color:var(--muted); font-size:12px; margin:4px 0 0; }
+    .err { color:var(--bad); font-size:13px; margin:8px 0 0; }
+    .empty { background:var(--card); border:1px dashed var(--line); border-radius:12px;
+             padding:28px; text-align:center; color:var(--muted); }
+    .cls { background:var(--card); border:1px solid var(--line); border-radius:12px;
+           padding:14px 16px; margin-bottom:10px; }
+    .cls-head { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap; }
+    .cls-head h2 { font-size:16px; margin:0; }
+    .cls-head .slug { font-family:ui-monospace,SFMono-Regular,Menlo,monospace;
+                      font-size:12px; color:var(--muted); }
+    .cls-head .spacer { flex:1; }
+    .chips { display:flex; gap:8px; flex-wrap:wrap; margin-top:10px; }
+    .chip { display:inline-flex; align-items:center; gap:6px; border:1px solid var(--line);
+            border-radius:999px; padding:4px 6px 4px 12px; font-size:13px; }
+    .chip .chip-btn { border:none; background:transparent; padding:2px 5px; font-size:12px;
+                      color:var(--muted); border-radius:999px; cursor:pointer; }
+    .chip .chip-btn:hover { color:var(--text); background:rgba(127,127,127,.15); }
+    .link-row { display:flex; gap:8px; margin-top:12px; max-width:420px; }
+    .link-row select { flex:1; }
+
+    dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
+             color:var(--text); padding:0; width:min(460px,94vw); }
+    dialog::backdrop { background:rgba(0,0,0,.45); }
+    #cropper { width:min(860px,96vw); }
+    .dlg-head, .dlg-foot { padding:14px 18px; display:flex; gap:10px; align-items:center; }
+    .dlg-head { border-bottom:1px solid var(--line); }
+    .dlg-foot { border-top:1px solid var(--line); justify-content:flex-end; }
+    .dlg-body { padding:16px 18px; }
+    .dlg-body label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
+    .dlg-foot .said { flex:1; min-width:0; }
+    .dlg-foot .said p { margin:0; }
+
+    .crop-stage { position:relative; line-height:0; border-radius:8px; overflow:hidden;
+                  background:rgba(127,127,127,.10); }
+    .crop-stage img { max-width:100%; display:block; user-select:none; -webkit-user-drag:none; }
+    .crop-stage canvas { position:absolute; inset:0; cursor:crosshair; touch-action:none; }
+    .crop-note { padding:40px 20px; text-align:center; color:var(--muted); line-height:1.5; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    {% if viewer %}<span class="sub">signed in as {{ viewer }}</span>{% endif %}
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/snapshots">Snapshots</a>
+    <a href="{{ base }}/classifications" aria-current="page">Classifications</a>
+    <a href="{{ base }}/activity">Activity</a>
+  </nav>
+
+  <div class="bar">
+    <button class="primary" id="new">New classification</button>
+    <span class="sub" id="count"></span>
+  </div>
+  <div id="list"></div>
+
+  <dialog id="creator">
+    <div class="dlg-head"><strong style="flex:1">New classification</strong></div>
+    <div class="dlg-body">
+      <label><span>Name &mdash; the state this will learn to read, e.g. "Litter tray"</span>
+        <input id="c-name" placeholder="Litter tray" autocomplete="off"></label>
+      <p class="hint" id="c-id"></p>
+      <p class="err" id="c-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="c-cancel">Cancel</button>
+      <button type="button" class="primary" id="c-save">Create</button>
+    </div>
+  </dialog>
+
+  <dialog id="cropper">
+    <div class="dlg-head">
+      <strong style="flex:1" id="crop-title">Select the area to classify</strong>
+    </div>
+    <div class="dlg-body">
+      <div class="crop-stage" id="crop-stage" hidden>
+        <img id="crop-img" alt="Latest snapshot">
+        <canvas id="crop-canvas"></canvas>
+      </div>
+      <div class="crop-note" id="crop-note">Loading the latest snapshot&hellip;</div>
+    </div>
+    <div class="dlg-foot">
+      <div class="said">
+        <p class="hint" id="crop-readout">Drag a square over the area the classification should watch.</p>
+      </div>
+      <button type="button" class="ghost" id="crop-cancel">Cancel</button>
+      <button type="button" class="primary" id="crop-save" disabled>Save</button>
+    </div>
+  </dialog>
+
+  <script>
+    const BASE = "{{ base }}";
+    let classifications = [], tags = [];
+    const $ = id => document.getElementById(id);
+    const esc = v => String(v ?? "").replace(/[&<>"]/g, c =>
+      ({"&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;"}[c] || c));
+    const tagName = id => (tags.find(t => t.id === id) || {}).name || id;
+    const finishedId = v => v.toLowerCase().replace(/\s+/g, "_")
+      .replace(/[^a-z0-9_]/g, "").replace(/_+/g, "_").replace(/^_+|_+$/g, "").slice(0, 48);
+
+    async function load() {
+      const res = await fetch(`${BASE}/api/classifications`);
+      const body = await res.json();
+      classifications = body.classifications; tags = body.tags;
+      render();
+    }
+
+    function render() {
+      $("count").textContent = classifications.length
+        ? `${classifications.length} classification(s)` : "";
+      if (!classifications.length) {
+        $("list").innerHTML = `<div class="empty"><p style="margin:0 0 6px">
+          <strong>No classifications yet</strong></p><p style="margin:0">A classification learns to
+          read a state from your snapshots &mdash; a litter tray needing attention, a door left open.
+          Create one, then link the tags whose snapshots show it.</p></div>`;
+        return;
+      }
+      $("list").innerHTML = classifications.map(c => {
+        const linked = new Set(c.tags.map(t => t.tag_id));
+        const unlinked = tags.filter(t => !linked.has(t.id));
+        return `
+        <div class="cls">
+          <div class="cls-head">
+            <h2>${esc(c.name)}</h2><span class="slug">${esc(c.id)}</span>
+            <span class="spacer"></span>
+            <button type="button" class="danger" data-del="${esc(c.id)}">Delete</button>
+          </div>
+          <div class="chips">
+            ${c.tags.map(t => `
+              <span class="chip" title="crop ${t.crop.map(v => v.toFixed(2)).join(", ")}">
+                ${esc(tagName(t.tag_id))}
+                <button type="button" class="chip-btn" title="Adjust the selected area"
+                        data-recrop="${esc(c.id)}" data-tag="${esc(t.tag_id)}">edit</button>
+                <button type="button" class="chip-btn" title="Unlink this tag"
+                        data-unlink="${esc(c.id)}" data-tag="${esc(t.tag_id)}">&times;</button>
+              </span>`).join("")
+              || `<span class="hint" style="margin:0">No tags linked yet.</span>`}
+          </div>
+          ${unlinked.length ? `
+          <div class="link-row">
+            <select data-tagpick="${esc(c.id)}">
+              ${unlinked.map(t => `<option value="${esc(t.id)}">${esc(t.name)}</option>`).join("")}
+            </select>
+            <button type="button" data-link="${esc(c.id)}">Link tag</button>
+          </div>` : ""}
+        </div>`;
+      }).join("");
+    }
+
+    // ---- create ----------------------------------------------------------
+    $("c-name").addEventListener("input", () => {
+      const id = finishedId($("c-name").value);
+      $("c-id").textContent = id ? `id: ${id}` : "";
+    });
+
+    async function create() {
+      const res = await fetch(`${BASE}/api/classifications`, {
+        method: "POST", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({name: $("c-name").value.trim()}),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("c-err").textContent = body.error || "Could not create that";
+        $("c-err").hidden = false;
+        return;
+      }
+      $("creator").close();
+      load();
+    }
+
+    // ---- crop dialog -----------------------------------------------------
+    // The box is chosen on the tag's newest snapshot and stored as fractions
+    // of the image, so it stays the same region whatever size a later
+    // snapshot is delivered at. Squareness is enforced here, in pixels,
+    // because the model this feeds takes a square input.
+    let cropCtx = null;   // {cid, tagId} while the dialog is open
+    let box = null;       // [x1,y1,x2,y2] in displayed-canvas pixels
+    let anchor = null;
+
+    async function openCrop(cid, tagId, existing) {
+      cropCtx = {cid, tagId};
+      box = null; anchor = null;
+      $("crop-title").textContent =
+        `${esc(tagName(tagId))} - select the area to classify`;
+      $("crop-stage").hidden = true;
+      $("crop-note").hidden = false;
+      $("crop-note").textContent = "Loading the latest snapshot…";
+      $("crop-save").disabled = true;
+      $("crop-readout").textContent =
+        "Drag a square over the area the classification should watch.";
+      $("cropper").showModal();
+
+      const res = await fetch(`${BASE}/api/tags/${tagId}/latest`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("crop-note").textContent = body.error || "No snapshot available.";
+        return;
+      }
+      const img = $("crop-img");
+      img.onload = () => {
+        $("crop-note").hidden = true;
+        $("crop-stage").hidden = false;
+        const canvas = $("crop-canvas");
+        canvas.width = img.clientWidth;
+        canvas.height = img.clientHeight;
+        if (existing) {
+          // Re-editing: start from the box already saved, so "adjust" means
+          // adjust rather than start over.
+          box = [existing[0] * canvas.width, existing[1] * canvas.height,
+                 existing[2] * canvas.width, existing[3] * canvas.height];
+          $("crop-save").disabled = false;
+          sayBox();
+        }
+        drawBox();
+      };
+      img.src = `${BASE}/snapshot/${body.tag}/${body.filename}`;
+    }
+
+    function drawBox() {
+      const canvas = $("crop-canvas");
+      const ctx = canvas.getContext("2d");
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      if (!box) return;
+      const [x1, y1, x2, y2] = box;
+      // Dim everything outside the selection so the chosen area reads as
+      // "what the model will see" rather than a faint rectangle.
+      ctx.fillStyle = "rgba(0,0,0,.45)";
+      ctx.fillRect(0, 0, canvas.width, canvas.height);
+      ctx.clearRect(x1, y1, x2 - x1, y2 - y1);
+      ctx.strokeStyle = "#03a9f4";
+      ctx.lineWidth = 2;
+      ctx.strokeRect(x1, y1, x2 - x1, y2 - y1);
+    }
+
+    function sayBox() {
+      const img = $("crop-img");
+      const side = Math.round((box[2] - box[0]) * (img.naturalWidth / img.clientWidth));
+      $("crop-readout").textContent =
+        `${side} x ${side} pixels of the snapshot. Drag again to redo, or Save.`;
+    }
+
+    function pointerPos(event) {
+      const rect = $("crop-canvas").getBoundingClientRect();
+      return {x: event.clientX - rect.left, y: event.clientY - rect.top};
+    }
+
+    $("crop-canvas").addEventListener("pointerdown", event => {
+      anchor = pointerPos(event);
+      box = null;
+      $("crop-canvas").setPointerCapture(event.pointerId);
+      drawBox();
+    });
+
+    $("crop-canvas").addEventListener("pointermove", event => {
+      if (!anchor) return;
+      const now = pointerPos(event);
+      const canvas = $("crop-canvas");
+      // A square, sized by the larger axis of the drag, growing in the
+      // direction dragged, clamped to the image.
+      let side = Math.max(Math.abs(now.x - anchor.x), Math.abs(now.y - anchor.y));
+      const dx = now.x >= anchor.x ? 1 : -1;
+      const dy = now.y >= anchor.y ? 1 : -1;
+      side = Math.min(side,
+        dx > 0 ? canvas.width - anchor.x : anchor.x,
+        dy > 0 ? canvas.height - anchor.y : anchor.y);
+      if (side < 8) { box = null; drawBox(); return; }
+      const x2 = anchor.x + dx * side, y2 = anchor.y + dy * side;
+      box = [Math.min(anchor.x, x2), Math.min(anchor.y, y2),
+             Math.max(anchor.x, x2), Math.max(anchor.y, y2)];
+      drawBox();
+    });
+
+    $("crop-canvas").addEventListener("pointerup", () => {
+      anchor = null;
+      $("crop-save").disabled = !box;
+      if (box) sayBox();
+    });
+
+    async function saveCrop() {
+      if (!box || !cropCtx) return;
+      const canvas = $("crop-canvas");
+      const crop = [box[0] / canvas.width, box[1] / canvas.height,
+                    box[2] / canvas.width, box[3] / canvas.height];
+      const res = await fetch(
+        `${BASE}/api/classifications/${cropCtx.cid}/tags/${cropCtx.tagId}`, {
+          method: "PUT", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({crop}),
+        });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("crop-readout").textContent = body.error || "Could not save the selection.";
+        return;
+      }
+      $("cropper").close();
+      load();
+    }
+
+    // ---- wiring ----------------------------------------------------------
+    document.addEventListener("click", async e => {
+      const t = e.target;
+      if (t.id === "new") {
+        $("c-name").value = ""; $("c-id").textContent = ""; $("c-err").hidden = true;
+        $("creator").showModal();
+      }
+      else if (t.id === "c-cancel") $("creator").close();
+      else if (t.id === "c-save") create();
+      else if (t.id === "crop-cancel") $("cropper").close();
+      else if (t.id === "crop-save") saveCrop();
+      else if (t.dataset.del) {
+        if (!confirm(`Delete ${t.dataset.del}? Its tag links go with it.`)) return;
+        await fetch(`${BASE}/api/classifications/${t.dataset.del}`, {method: "DELETE"});
+        load();
+      }
+      else if (t.dataset.link) {
+        const pick = document.querySelector(`select[data-tagpick="${t.dataset.link}"]`);
+        if (pick && pick.value) openCrop(t.dataset.link, pick.value, null);
+      }
+      else if (t.dataset.recrop) {
+        const c = classifications.find(x => x.id === t.dataset.recrop);
+        const link = c && c.tags.find(x => x.tag_id === t.dataset.tag);
+        openCrop(t.dataset.recrop, t.dataset.tag, link ? link.crop : null);
+      }
+      else if (t.dataset.unlink) {
+        if (!confirm(`Unlink ${tagName(t.dataset.tag)}?`)) return;
+        await fetch(`${BASE}/api/classifications/${t.dataset.unlink}/tags/${t.dataset.tag}`,
+                    {method: "DELETE"});
+        load();
+      }
+    });
+
+    load();
+  </script>
+</body>
+</html>

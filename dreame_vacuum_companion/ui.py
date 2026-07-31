@@ -243,6 +243,99 @@ def api_create_tag():
     return jsonify({"tag": tag})
 
 
+@app.route("/api/tags/<tag>/latest")
+def api_tag_latest(tag):
+    """The newest snapshot for a tag - what the crop is drawn on.
+
+    The timestamped file rather than latest.jpg, so the browser's cache can
+    never show yesterday's photo under today's name.
+    """
+    groups = _snapshot_index(tag)
+    if not groups or not groups[0]["snapshots"]:
+        return jsonify({"error": "No snapshots with this tag yet - run a task "
+                                 "that takes one first"}), 404
+    newest = groups[0]["snapshots"][0]
+    return jsonify({"tag": _safe_tag(tag), "filename": newest["filename"],
+                    "taken_at": newest["taken_at"]})
+
+
+@app.route("/classifications")
+def classifications():
+    return render_template("classifications.html", base=_ingress_base(),
+                           viewer=_viewer(), page="classifications")
+
+
+@app.route("/api/classifications")
+def api_classifications():
+    # Tag names ride along so the page needs no second fetch to label chips.
+    return jsonify({
+        "classifications": store.list_classifiers(),
+        "tags": store.list_tags(),
+    })
+
+
+@app.route("/api/classifications", methods=["POST"])
+def api_create_classification():
+    body = request.get_json(silent=True) or {}
+    try:
+        made = store.create_classifier(body.get("name") or "")
+    except ValueError as err:
+        return jsonify({"error": str(err)}), 409
+    if not made:
+        return jsonify({"error": "A classification needs letters or numbers "
+                                 "in its name"}), 400
+    return jsonify({"classification": made})
+
+
+@app.route("/api/classifications/<cid>", methods=["DELETE"])
+def api_delete_classification(cid):
+    if not store.delete_classifier(cid):
+        return jsonify({"error": "No such classification"}), 404
+    return jsonify({"success": True})
+
+
+def _valid_crop(crop):
+    """A normalised square-ish region: four floats in [0,1] with real area.
+
+    Squareness is not checked here - it is enforced in image-pixel space by
+    the UI, and normalised coordinates of a pixel square are only equal-sided
+    when the image happens to be square itself.
+    """
+    if not (isinstance(crop, list) and len(crop) == 4):
+        return None
+    try:
+        x1, y1, x2, y2 = (float(v) for v in crop)
+    except (TypeError, ValueError):
+        return None
+    if not all(0.0 <= v <= 1.0 for v in (x1, y1, x2, y2)):
+        return None
+    if x2 - x1 < 0.01 or y2 - y1 < 0.01:
+        return None
+    return [round(x1, 4), round(y1, 4), round(x2, 4), round(y2, 4)]
+
+
+@app.route("/api/classifications/<cid>/tags/<tag_id>", methods=["PUT"])
+def api_link_classification_tag(cid, tag_id):
+    if not store.get_classifier(cid):
+        return jsonify({"error": "No such classification"}), 404
+    if not any(t["id"] == tag_id for t in store.list_tags()):
+        return jsonify({"error": "No such tag"}), 404
+    body = request.get_json(silent=True) or {}
+    crop = _valid_crop(body.get("crop"))
+    if crop is None:
+        return jsonify({"error": "crop must be [x1, y1, x2, y2] as fractions "
+                                 "of the image, with some area to it"}), 400
+    store.set_classifier_tag(cid, tag_id, crop)
+    return jsonify({"classification": store.get_classifier(cid)})
+
+
+@app.route("/api/classifications/<cid>/tags/<tag_id>", methods=["DELETE"])
+def api_unlink_classification_tag(cid, tag_id):
+    if not store.unlink_classifier_tag(cid, tag_id):
+        return jsonify({"error": "That tag is not linked"}), 404
+    return jsonify({"classification": store.get_classifier(cid)})
+
+
 def _busy_by_device():
     """What each vacuum is doing, from the integration's own live state.
 

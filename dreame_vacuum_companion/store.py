@@ -100,6 +100,26 @@ CREATE TABLE IF NOT EXISTS tags (
     created_at INTEGER,
     updated_at INTEGER
 );
+
+-- Classifications: a state a model will learn to read from snapshots (the
+-- model itself comes later - this is the authoring side). A classification
+-- is linked to one or more tags, and each link carries its own crop: the
+-- same state can be judged from two viewpoints, and the square that frames
+-- it is different in each.
+CREATE TABLE IF NOT EXISTS classifiers (
+    id         TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    created_at INTEGER,
+    updated_at INTEGER
+);
+
+CREATE TABLE IF NOT EXISTS classifier_tags (
+    classifier_id TEXT NOT NULL,
+    tag_id        TEXT NOT NULL,
+    crop          TEXT NOT NULL,   -- json [x1,y1,x2,y2], normalised 0-1
+    created_at    INTEGER,
+    PRIMARY KEY (classifier_id, tag_id)
+);
 """
 
 
@@ -420,6 +440,88 @@ def ensure_tags(ids):
                 "INSERT OR IGNORE INTO tags (id, name, created_at, updated_at) VALUES (?,?,?,?)",
                 (tag_id, tag_id.replace("_", " "), now, now),
             )
+
+
+# -- classifications -------------------------------------------------------
+def list_classifiers():
+    """Every classification, each with its tag links and their crops."""
+    with _lock, _connect() as db:
+        rows = db.execute(
+            "SELECT id, name FROM classifiers ORDER BY name COLLATE NOCASE"
+        ).fetchall()
+        links = db.execute(
+            "SELECT classifier_id, tag_id, crop FROM classifier_tags ORDER BY tag_id"
+        ).fetchall()
+    by_classifier = {}
+    for classifier_id, tag_id, crop in links:
+        try:
+            parsed = json.loads(crop)
+        except ValueError:
+            continue
+        by_classifier.setdefault(classifier_id, []).append(
+            {"tag_id": tag_id, "crop": parsed}
+        )
+    return [
+        {"id": r[0], "name": r[1], "tags": by_classifier.get(r[0], [])} for r in rows
+    ]
+
+
+def get_classifier(classifier_id):
+    for c in list_classifiers():
+        if c["id"] == classifier_id:
+            return c
+    return None
+
+
+def create_classifier(name):
+    """Create a classification. Returns it, or None for an empty name, or
+    raises ValueError if the id is already taken - a silent upsert here would
+    quietly merge two classifications someone named alike."""
+    classifier_id = slugify(name)
+    if not classifier_id:
+        return None
+    now = int(time.time())
+    with _lock, _connect() as db:
+        exists = db.execute(
+            "SELECT 1 FROM classifiers WHERE id = ?", (classifier_id,)
+        ).fetchone()
+        if exists:
+            raise ValueError(f"The id '{classifier_id}' is already in use")
+        db.execute(
+            "INSERT INTO classifiers (id, name, created_at, updated_at) VALUES (?,?,?,?)",
+            (classifier_id, str(name).strip(), now, now),
+        )
+    return {"id": classifier_id, "name": str(name).strip(), "tags": []}
+
+
+def delete_classifier(classifier_id):
+    with _lock, _connect() as db:
+        db.execute("DELETE FROM classifier_tags WHERE classifier_id = ?", (classifier_id,))
+        return db.execute(
+            "DELETE FROM classifiers WHERE id = ?", (classifier_id,)
+        ).rowcount > 0
+
+
+def set_classifier_tag(classifier_id, tag_id, crop):
+    """Link a tag (or update its crop). The crop travels with the link, not
+    the classification: the same state seen from two viewpoints needs two
+    different squares."""
+    now = int(time.time())
+    with _lock, _connect() as db:
+        db.execute(
+            "INSERT INTO classifier_tags (classifier_id, tag_id, crop, created_at) "
+            "VALUES (?,?,?,?) "
+            "ON CONFLICT(classifier_id, tag_id) DO UPDATE SET crop=excluded.crop",
+            (classifier_id, tag_id, json.dumps(list(crop)), now),
+        )
+
+
+def unlink_classifier_tag(classifier_id, tag_id):
+    with _lock, _connect() as db:
+        return db.execute(
+            "DELETE FROM classifier_tags WHERE classifier_id = ? AND tag_id = ?",
+            (classifier_id, tag_id),
+        ).rowcount > 0
 
 
 def close_orphaned_runs(did=None, summary="Abandoned - Home Assistant restarted"):
