@@ -102,6 +102,10 @@
     .pick-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated;
       cursor:crosshair; border-radius:8px; display:block; }
     #picker { width:min(900px,96vw); }
+    /* The readout takes the room the buttons do not, and wraps rather than
+       pushing them off the edge on a narrow screen. */
+    .pick-foot .pick-said { flex:1; min-width:0; }
+    .pick-foot .pick-said p { margin:0; }
     pre.export { background:rgba(127,127,127,.10); padding:12px; border-radius:8px; overflow-x:auto;
       font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12.5px; white-space:pre; }
   </style>
@@ -165,13 +169,15 @@
       <div id="pick-wrap" class="pick-wrap">
         <canvas id="pick-canvas"></canvas>
       </div>
-      <label class="tg" style="margin-top:10px">
-        <input type="checkbox" id="pick-names"> show room names
-      </label>
-      <p class="hint" id="pick-readout">Click the map to choose a point.</p>
-      <p class="err" id="pick-err" hidden></p>
     </div>
-    <div class="dlg-foot">
+    <!-- The readout sits with the buttons, outside the scrolling body: it is
+         about the point you just clicked, and scrolling the map away from the
+         coordinates it produced makes them hard to check. -->
+    <div class="dlg-foot pick-foot">
+      <div class="pick-said">
+        <p class="hint" id="pick-readout">Click the map to choose a point.</p>
+        <p class="err" id="pick-err" hidden></p>
+      </div>
       <button type="button" class="ghost" id="pick-cancel">Cancel</button>
       <button type="button" class="primary" id="pick-select" disabled>Select</button>
     </div>
@@ -346,6 +352,25 @@
           "restart Home Assistant to see the vacuum's footprint)";
     }
 
+    /**
+     * The current point, described against the map now loaded, with the
+     * Select button set to match.
+     *
+     * Used for a point carried in from the step as well as a fresh click,
+     * because a coordinate saved against an older map can land in a wall or
+     * off the edge once the vacuum has re-scanned - and silently offering
+     * Select on one of those is how a task comes to drive about and give up.
+     */
+    function describePicked() {
+      const where = mapApi.describePoint(mapDoc, picked.x, picked.y);
+      $("pick-select").disabled = !where.ok;
+      if (!where.ok) {
+        return `The point already set (x ${picked.x}, y ${picked.y}) is ` +
+               `${where.reason} on this map - pick another.`;
+      }
+      return `x ${picked.x}, y ${picked.y} (millimetres) in ${where.name}` + rendererNote();
+    }
+
     function drawPicker() {
       if (!mapDoc) return;
       const canvas = $("pick-canvas");
@@ -354,7 +379,10 @@
       canvas.height = mapDoc.rows * scale;
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
-      mapApi.drawBase(ctx, mapDoc, {scale, showRoomNames: $("pick-names").checked});
+      // No room names: they are placeholders ("Room 3") until the map's
+      // rism blob is decoded, and they cover the floor being clicked. The
+      // readout names the room on click, which is when it is wanted.
+      mapApi.drawBase(ctx, mapDoc, {scale});
       if (mapDoc.dock && mapApi.drawDock) {
         mapApi.drawDock(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1],
                                       heading: mapDoc.dock_angle}, {scale});
@@ -376,8 +404,14 @@
     function stepDid() { return $("t-did").value; }
 
     async function openPicker(index) {
-      pickStep = index; picked = null;
-      $("pick-select").disabled = true;
+      pickStep = index;
+      // Open on the point the step already has, rather than blank: most
+      // visits to this dialog are to adjust a coordinate, not invent one,
+      // and starting from nothing hides what is being changed.
+      const step = stepsState[index] || {};
+      picked = (step.x === "" || step.x == null || step.y === "" || step.y == null)
+        ? null : {x: Number(step.x), y: Number(step.y)};
+      $("pick-select").disabled = picked === null;
       $("pick-err").hidden = true;
       $("pick-readout").textContent = "Loading map...";
       $("picker").showModal();
@@ -400,10 +434,12 @@
       } catch (err) {
         return pickFail(`Could not read the map: ${err.message}`);
       }
-      picked = null;
-      $("pick-select").disabled = true;
       $("pick-err").hidden = true;
-      $("pick-readout").textContent = "Click the map to choose a point.";
+      // A point carried in from the step is described against the map that
+      // has just arrived - which is also how a coordinate left over from an
+      // older, differently-shaped map shows itself as off-map or in a wall.
+      $("pick-readout").textContent = picked ? describePicked() 
+                                             : "Click the map to choose a point.";
       drawPicker();
     }
 
@@ -435,9 +471,7 @@
         return;
       }
       picked = point;
-      $("pick-select").disabled = false;
-      $("pick-readout").textContent =
-        `x ${point.x}, y ${point.y} (millimetres) in ${where.name}` + rendererNote();
+      $("pick-readout").textContent = describePicked();
       drawPicker();
     }
 
@@ -531,7 +565,6 @@
     });
 
     $("pick-canvas").addEventListener("click", onMapClick);
-    $("pick-names").addEventListener("change", drawPicker);
     load();
   </script>
 </body>
