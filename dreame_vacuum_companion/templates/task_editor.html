@@ -50,7 +50,13 @@
     .map-wrap canvas { width:100%; height:auto; display:block; border-radius:12px 12px 0 0; }
     .map-wrap canvas.armed { cursor:crosshair; }
     .map-note { position:absolute; inset:0; display:flex; align-items:center; justify-content:center;
-                text-align:center; padding:24px; color:var(--muted); }
+                text-align:center; padding:24px; }
+    /* The class rule above would otherwise beat the browser's [hidden] rule,
+       leaving an invisible overlay that swallows every click on the map. */
+    .map-note[hidden] { display:none; }
+    .map-note span { background:var(--card); border:1px solid var(--line); color:var(--muted);
+                     padding:10px 16px; border-radius:10px; max-width:80%;
+                     box-shadow:0 2px 10px rgba(0,0,0,.18); }
 
     .infobar { display:flex; align-items:center; gap:10px; padding:10px 14px;
                border-top:1px solid var(--line); min-height:52px; font-size:13.5px; }
@@ -142,7 +148,7 @@
     <div class="ed-main pane">
       <div class="map-wrap" id="map-wrap">
         <canvas id="map"></canvas>
-        <div class="map-note" id="map-note">Loading map&hellip;</div>
+        <div class="map-note" id="map-note"><span id="map-note-text">Loading map&hellip;</span></div>
       </div>
       <div class="infobar">
         <div class="values" id="info">Choose a tool, then click the map.</div>
@@ -229,8 +235,6 @@
       start_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
       stop_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',
     };
-    // Step types the toolbar owns; everything else is offered by the Add menu.
-    const TOOLBAR_TYPES = new Set(["go_to_point", "rotate_to_heading", "take_snapshot", "return_to_dock"]);
 
     let schema = {}, devices = [], tags = [];
     let stepsState = TASK ? JSON.parse(JSON.stringify(TASK.steps)) : [];
@@ -270,8 +274,10 @@
       schema = body.step_types; devices = body.devices;
       $("t-did").innerHTML = devices.map(d =>
         `<option value="${esc(d.did)}"${TASK && TASK.did === d.did ? " selected" : ""}>${esc(d.name)}</option>`).join("");
+      // Every step type, not just the ones the toolbar lacks: the menu is
+      // the keyboard-and-numbers alternative to the map for people who know
+      // their coordinates, not a remainder bin.
       $("add-type").innerHTML = Object.entries(schema)
-        .filter(([k]) => !TOOLBAR_TYPES.has(k))
         .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
       if (TASK) { $("t-name").value = TASK.name; $("t-slug").value = TASK.slug; }
       await refreshTags();
@@ -321,8 +327,8 @@
     }
 
     function mapNote(text) {
-      const note = $("map-note");
-      note.hidden = false; note.textContent = text;
+      $("map-note").hidden = false;
+      $("map-note-text").textContent = text;
     }
 
     /**
