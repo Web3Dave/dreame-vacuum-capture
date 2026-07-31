@@ -30,6 +30,24 @@ app = Flask(__name__)
 UI_PORT = int(os.environ.get("COMPANION_UI_PORT", "8100"))
 
 
+def _addon_version() -> str:
+    """Our own version, used to bust caches on the JavaScript we serve.
+
+    Read from config.yaml rather than duplicated in code, so bumping the
+    add-on is the only place a version has to change. Falls back to a clock
+    reading: a cache that is never reused beats a stale one that breaks a
+    page in a way nobody can diagnose.
+    """
+    try:
+        with open(os.path.join(os.path.dirname(__file__), "config.yaml")) as handle:
+            return str(yaml.safe_load(handle).get("version") or int(time.time()))
+    except Exception:  # noqa: BLE001
+        return str(int(time.time()))
+
+
+ADDON_VERSION = _addon_version()
+
+
 def _ingress_base() -> str:
     """Ingress serves us under a generated path prefix; links must respect it."""
     return request.headers.get("X-Ingress-Path", "")
@@ -182,7 +200,8 @@ def map_image(did):
 
 @app.route("/tasks")
 def tasks():
-    return render_template("tasks.html", base=_ingress_base(), viewer=_viewer(), page="tasks")
+    return render_template("tasks.html", base=_ingress_base(), viewer=_viewer(),
+                           page="tasks", addon_version=ADDON_VERSION)
 
 
 def _busy_by_device():

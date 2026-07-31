@@ -192,6 +192,7 @@
 
   <script>
     const BASE = "{{ base }}";
+    const ADDON_VERSION = "{{ addon_version }}";
     let schema = {}, devices = [], tasks = [], editing = null, view = "ui", stepsState = [];
     let timer = null;
     const $ = id => document.getElementById(id);
@@ -324,12 +325,25 @@
 
     async function mapModule() {
       if (!mapApi) {
-        mapApi = await import("/dreame_vacuum_core/map.js");
+        // Versioned so a browser holding yesterday's copy fetches this one.
+        // The two halves ship separately, so they will sometimes disagree -
+        // hence the capability checks below rather than assuming what the
+        // module can do.
+        mapApi = await import(`/dreame_vacuum_core/map.js?v=${ADDON_VERSION}`);
         // Sprites for the vacuum and dock. Awaited so the first draw is the
         // finished picture rather than shapes that swap under the cursor.
-        await mapApi.loadSprites();
+        if (mapApi.loadSprites) await mapApi.loadSprites();
       }
       return mapApi;
+    }
+
+    // Said once, in the picker, rather than left as a mystery: the symptom of
+    // an old renderer is a map that draws but a chosen point that does not
+    // look like the vacuum, which reads as a bug in this page.
+    function rendererNote() {
+      return mapApi && mapApi.drawTarget ? ""
+        : " (the integration is serving an older map renderer - update it and " +
+          "restart Home Assistant to see the vacuum's footprint)";
     }
 
     function drawPicker() {
@@ -341,7 +355,7 @@
       const ctx = canvas.getContext("2d");
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       mapApi.drawBase(ctx, mapDoc, {scale, showRoomNames: $("pick-names").checked});
-      if (mapDoc.dock) {
+      if (mapDoc.dock && mapApi.drawDock) {
         mapApi.drawDock(ctx, mapDoc, {x: mapDoc.dock[0], y: mapDoc.dock[1],
                                       heading: mapDoc.dock_angle}, {scale});
       }
@@ -349,12 +363,13 @@
         mapApi.drawVacuum(ctx, mapDoc, {x: mapDoc.robot[0], y: mapDoc.robot[1],
                                         heading: mapDoc.angle}, {scale});
       }
+      // The chosen point is drawn as the machine standing on it, at its real
+      // 320mm width - a dot says where the coordinate is, this says what
+      // picking it means, and a target too tight to fit looks wrong here
+      // rather than after the vacuum has been driven at it.
       if (picked) {
-        // The machine drawn where it would end up, at its real 320mm width,
-        // so a point that looks clear but is too tight to stand in shows as
-        // one before the task is saved. No cone: it has no heading yet.
-        mapApi.drawVacuum(ctx, mapDoc, picked, {scale, fov: 0, opacity: .55});
-        mapApi.drawMarker(ctx, mapDoc, picked, {scale});
+        if (mapApi.drawTarget) mapApi.drawTarget(ctx, mapDoc, picked, {scale});
+        else mapApi.drawMarker(ctx, mapDoc, picked, {scale});
       }
     }
 
@@ -422,7 +437,7 @@
       picked = point;
       $("pick-select").disabled = false;
       $("pick-readout").textContent =
-        `x ${point.x}, y ${point.y} (millimetres) in ${where.name}`;
+        `x ${point.x}, y ${point.y} (millimetres) in ${where.name}` + rendererNote();
       drawPicker();
     }
 
