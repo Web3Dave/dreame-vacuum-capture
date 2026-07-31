@@ -58,6 +58,7 @@ COPY dreame_lib/ dreame_lib/
 COPY dreame_sign.py .
 COPY app.py .
 COPY store.py .
+COPY config_store.py .
 COPY steps.py .
 COPY ha_client.py .
 COPY ui.py .

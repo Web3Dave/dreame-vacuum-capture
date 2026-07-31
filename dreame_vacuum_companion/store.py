@@ -8,6 +8,15 @@ covered by the add-on's normal backup.
 
 Vacuum *state* is intentionally not stored here. Home Assistant already owns
 that; the UI reads it live over the HA API so there is no second copy to drift.
+
+Tags, tasks and classifications used to live here too, but they are settings a
+person authors - the kind of thing you want to read, diff and back up as text -
+so they moved to config_store.py, a YAML file, the same way Frigate keeps
+config.yml rather than a database. The tables and the functions below that
+read them (list_tags, list_tasks, list_classifiers, and the rest of that
+group) are kept only so config_store.migrate_from_sqlite can do a one-time
+export on first boot after the upgrade; nothing else calls them any more, and
+they are not exercised by fresh installs at all.
 """
 from __future__ import annotations
 

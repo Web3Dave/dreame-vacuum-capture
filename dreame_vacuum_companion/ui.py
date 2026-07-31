@@ -13,6 +13,7 @@ route editing goes here next.
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shutil
 import time
@@ -23,6 +24,7 @@ from flask import Flask, abort, jsonify, redirect, render_template, request, sen
 import ha_client
 import yaml
 
+import config_store
 import steps as step_schema
 import store
 
@@ -228,7 +230,7 @@ def task_new():
 def task_edit(slug):
     """A real URL rather than a modal: refresh keeps your place, the browser
     back button is honest navigation, and an edit screen can be linked to."""
-    task = store.get_task(slug)
+    task = config_store.get_task(slug)
     if not task:
         abort(404)
     return render_template("task_editor.html", base=_ingress_base(), viewer=_viewer(),
@@ -241,17 +243,17 @@ def api_tags():
     # existed, or via the service with an ad-hoc tag. Adopt them so the
     # dropdown offers what the media browser already shows.
     if os.path.isdir(SNAPSHOT_ROOT):
-        store.ensure_tags(
+        config_store.ensure_tags(
             name for name in os.listdir(SNAPSHOT_ROOT)
             if os.path.isdir(os.path.join(SNAPSHOT_ROOT, name))
         )
-    return jsonify({"tags": store.list_tags()})
+    return jsonify({"tags": config_store.list_tags()})
 
 
 @app.route("/api/tags", methods=["POST"])
 def api_create_tag():
     body = request.get_json(silent=True) or {}
-    tag = store.save_tag(body.get("name") or "")
+    tag = config_store.save_tag(body.get("name") or "")
     if not tag:
         return jsonify({"error": "A tag needs letters or numbers in its name"}), 400
     return jsonify({"tag": tag})
@@ -283,8 +285,8 @@ def classifications():
 def api_classifications():
     # Tag names ride along so the page needs no second fetch to label chips.
     return jsonify({
-        "classifications": store.list_classifiers(),
-        "tags": store.list_tags(),
+        "classifications": config_store.list_classifiers(),
+        "tags": config_store.list_tags(),
     })
 
 
@@ -292,7 +294,7 @@ def api_classifications():
 def api_create_classification():
     body = request.get_json(silent=True) or {}
     try:
-        made = store.create_classifier(body.get("name") or "")
+        made = config_store.create_classifier(body.get("name") or "")
     except ValueError as err:
         return jsonify({"error": str(err)}), 409
     if not made:
@@ -303,7 +305,7 @@ def api_create_classification():
 
 @app.route("/api/classifications/<cid>", methods=["DELETE"])
 def api_delete_classification(cid):
-    if not store.delete_classifier(cid):
+    if not config_store.delete_classifier(cid):
         return jsonify({"error": "No such classification"}), 404
     return jsonify({"success": True})
 
@@ -330,24 +332,24 @@ def _valid_crop(crop):
 
 @app.route("/api/classifications/<cid>/tags/<tag_id>", methods=["PUT"])
 def api_link_classification_tag(cid, tag_id):
-    if not store.get_classifier(cid):
+    if not config_store.get_classifier(cid):
         return jsonify({"error": "No such classification"}), 404
-    if not any(t["id"] == tag_id for t in store.list_tags()):
+    if not any(t["id"] == tag_id for t in config_store.list_tags()):
         return jsonify({"error": "No such tag"}), 404
     body = request.get_json(silent=True) or {}
     crop = _valid_crop(body.get("crop"))
     if crop is None:
         return jsonify({"error": "crop must be [x1, y1, x2, y2] as fractions "
                                  "of the image, with some area to it"}), 400
-    store.set_classifier_tag(cid, tag_id, crop)
-    return jsonify({"classification": store.get_classifier(cid)})
+    config_store.set_classifier_tag(cid, tag_id, crop)
+    return jsonify({"classification": config_store.get_classifier(cid)})
 
 
 @app.route("/api/classifications/<cid>/tags/<tag_id>", methods=["DELETE"])
 def api_unlink_classification_tag(cid, tag_id):
-    if not store.unlink_classifier_tag(cid, tag_id):
+    if not config_store.unlink_classifier_tag(cid, tag_id):
         return jsonify({"error": "That tag is not linked"}), 404
-    return jsonify({"classification": store.get_classifier(cid)})
+    return jsonify({"classification": config_store.get_classifier(cid)})
 
 
 def _busy_by_device():
@@ -383,7 +385,7 @@ def _busy_by_device():
 @app.route("/api/tasks", methods=["GET"])
 def api_tasks():
     busy = _busy_by_device()
-    tasks = store.list_tasks()
+    tasks = config_store.list_tasks()
     for task in tasks:
         state = busy.get(task["did"]) or {}
         # Two different reasons a task cannot start: it is itself running, or
@@ -450,7 +452,7 @@ def api_save_task():
     for field in ("did", "name", "steps"):
         if not body.get(field):
             return jsonify({"error": f"{field} is required"}), 400
-    slug = store.slugify(body.get("slug") or body["name"])
+    slug = config_store.slugify(body.get("slug") or body["name"])
     if not slug:
         return jsonify({"error": "Use letters or numbers in the name"}), 400
     # The id is editable, so two cases need telling apart: a *new* task whose
@@ -458,24 +460,24 @@ def api_save_task():
     # overwrite someone else's task), and an *edit* that changed the id
     # (allowed - the old row is renamed away, because an automation calls a
     # task by id and a duplicate under the old id would keep answering).
-    previous = store.slugify(body.get("previous_slug") or "")
-    if not previous and store.get_task(slug):
+    previous = config_store.slugify(body.get("previous_slug") or "")
+    if not previous and config_store.get_task(slug):
         return jsonify({"error": f"The id '{slug}' is already in use"}), 409
-    if previous and previous != slug and store.get_task(slug):
+    if previous and previous != slug and config_store.get_task(slug):
         return jsonify({"error": f"The id '{slug}' is already in use"}), 409
     try:
         validated = step_schema.validate_steps(body["steps"])
     except step_schema.StepError as err:
         return jsonify({"error": str(err)}), 400
-    store.save_task(slug, body["did"], body["name"], validated)
+    config_store.save_task(slug, body["did"], body["name"], validated)
     if previous and previous != slug:
-        store.delete_task(previous)
-    return jsonify({"task": store.get_task(slug)})
+        config_store.delete_task(previous)
+    return jsonify({"task": config_store.get_task(slug)})
 
 
 @app.route("/api/tasks/<slug>", methods=["DELETE"])
 def api_delete_task(slug):
-    if not store.delete_task(slug):
+    if not config_store.delete_task(slug):
         return jsonify({"error": "No such task"}), 404
     return jsonify({"success": True})
 
@@ -487,7 +489,7 @@ def api_export_task(slug):
     One-way on purpose: once pasted into Home Assistant it is the user's, and
     nothing here tries to keep the two in step.
     """
-    task = store.get_task(slug)
+    task = config_store.get_task(slug)
     if not task:
         return jsonify({"error": "No such task"}), 404
     entities = (store.get_device(task["did"]) or {}).get("entities") or {}
@@ -504,7 +506,7 @@ def api_export_task(slug):
 
 @app.route("/api/tasks/<slug>/run", methods=["POST"])
 def api_run_task(slug):
-    task = store.get_task(slug)
+    task = config_store.get_task(slug)
     if not task:
         return jsonify({"error": "No such task"}), 404
     entities = (store.get_device(task["did"]) or {}).get("entities") or {}
@@ -601,13 +603,13 @@ def api_tags_overview():
     not just a folder that happens to exist.
     """
     if os.path.isdir(SNAPSHOT_ROOT):
-        store.ensure_tags(
+        config_store.ensure_tags(
             name for name in os.listdir(SNAPSHOT_ROOT)
             if os.path.isdir(os.path.join(SNAPSHOT_ROOT, name))
         )
     snaps = {g["tag"]: g for g in _snapshot_index(limit=TAG_PREVIEW_COUNT)}
     watching = {}
-    for c in store.list_classifiers():
+    for c in config_store.list_classifiers():
         for link in c["tags"]:
             watching.setdefault(link["tag_id"], []).append(
                 {"id": c["id"], "name": c["name"]}
@@ -619,7 +621,7 @@ def api_tags_overview():
             "snapshots": snaps.get(tag["id"], {}).get("snapshots", []),
             "classifications": watching.get(tag["id"], []),
         }
-        for tag in store.list_tags()
+        for tag in config_store.list_tags()
     ]})
 
 
@@ -628,7 +630,7 @@ def tag_detail(tag_id):
     """All of a tag's snapshots, loaded a page at a time as the user scrolls -
     the Tags page itself only ever shows a preview row."""
     safe = _safe_tag(tag_id)
-    tag = next((t for t in store.list_tags() if t["id"] == safe), None)
+    tag = next((t for t in config_store.list_tags() if t["id"] == safe), None)
     if not tag:
         abort(404)
     return render_template("tag_detail.html", base=_ingress_base(), viewer=_viewer(),
@@ -660,12 +662,12 @@ def api_tag_snapshots(tag_id):
 @app.route("/api/tags/<tag_id>", methods=["PATCH"])
 def api_rename_tag(tag_id):
     """Rename a tag. The id (the folder name, and what a step's tag field
-    stores) does not change - see store.rename_tag for why."""
+    stores) does not change - see config_store.rename_tag for why."""
     body = request.get_json(silent=True) or {}
     safe = _safe_tag(tag_id)
-    if not any(t["id"] == safe for t in store.list_tags()):
+    if not any(t["id"] == safe for t in config_store.list_tags()):
         return jsonify({"error": "No such tag"}), 404
-    tag = store.rename_tag(safe, body.get("name") or "")
+    tag = config_store.rename_tag(safe, body.get("name") or "")
     if not tag:
         return jsonify({"error": "A tag needs letters or numbers in its name"}), 400
     return jsonify({"tag": tag})
@@ -679,7 +681,7 @@ def api_delete_tag(tag_id):
     the next seed from disk, which reads as a delete that did not work.
     """
     safe = _safe_tag(tag_id)
-    if not store.delete_tag(safe):
+    if not config_store.delete_tag(safe):
         return jsonify({"error": "No such tag"}), 404
     folder = os.path.join(SNAPSHOT_ROOT, safe)
     if os.path.isdir(folder):
@@ -721,8 +723,47 @@ def health():
     return jsonify({"status": "ok", "devices": len(store.list_devices()), "ha": ha_client.available()})
 
 
+@app.route("/config")
+def config_editor_page():
+    return render_template("config_editor.html", base=_ingress_base(), viewer=_viewer(),
+                           page="config")
+
+
+@app.route("/api/config/raw")
+def api_config_raw():
+    """The file as written, for the editor - never reformatted on the way out."""
+    return jsonify({"yaml": config_store.raw()})
+
+
+@app.route("/api/config/raw", methods=["PUT"])
+def api_config_save():
+    """Validate and write the editor's text verbatim.
+
+    All problems are reported together (config_store.validate walks every
+    section rather than stopping at the first), because fixing a config one
+    error per save is a miserable way to spend an evening.
+    """
+    body = request.get_json(silent=True) or {}
+    text = body.get("yaml")
+    if text is None:
+        return jsonify({"error": "yaml is required"}), 400
+    try:
+        config_store.save_raw(text)
+    except config_store.ConfigError as err:
+        return jsonify({"error": str(err)}), 400
+    return jsonify({"success": True})
+
+
 if __name__ == "__main__":
     store.init()
+    # One-time export of tasks/tags/classifications out of SQLite and into the
+    # config file, only when no file exists yet. The old tables are read but
+    # never dropped - a bug here should not cost anyone their data, and the
+    # tables cost nothing left in place and unused.
+    try:
+        config_store.migrate_from_sqlite(store)
+    except Exception:  # noqa: BLE001 - startup must not fail over this
+        logging.getLogger(__name__).exception("Could not migrate config from SQLite")
     from waitress import serve
 
     serve(app, host="0.0.0.0", port=UI_PORT, threads=4)

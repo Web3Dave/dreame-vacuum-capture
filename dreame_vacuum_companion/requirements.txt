@@ -5,3 +5,4 @@ paho-mqtt
 pycryptodome
 python-miio
 pyyaml
+ruamel.yaml
