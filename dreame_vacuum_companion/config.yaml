@@ -4,7 +4,7 @@ description: >-
   and RTSP streams from the vacuum's onboard camera via Tencent's XP2P SDK,
   and hosts the control panel UI. Install the dreame_vacuum_core integration
   alongside it - that owns the vacuum entities and drives this add-on's API.
-version: "3.24.0"
+version: "3.25.0"
 slug: dreame_vacuum_companion
 url: https://github.com/Web3Dave/dreame-vacuum-companion
 init: false
@@ -25,6 +25,14 @@ panel_admin: false
 # Lets the UI read entity state and call services instead of duplicating
 # vacuum state that Home Assistant already owns.
 homeassistant_api: true
+
+# "want" rather than "need": classification results are broadcast over MQTT
+# when a broker is available (the Supervisor injects MQTT_HOST/PORT/USERNAME/
+# PASSWORD automatically - nothing to configure), but their absence must not
+# block the add-on from starting, since MQTT is optional and classification
+# itself is disabled by default.
+services:
+  - mqtt:want
 
 ports:
   8099/tcp: 8099

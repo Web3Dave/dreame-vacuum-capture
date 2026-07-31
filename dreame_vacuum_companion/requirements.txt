@@ -7,3 +7,11 @@ python-miio
 pyyaml
 ruamel.yaml
 Pillow
+# 2.13 rather than the 2.19 Frigate pins: this image's base is Ubuntu 20.04,
+# whose python3 is 3.8, and TensorFlow dropped 3.8 support at 2.14. 2.13 is
+# the newest release still built for it - same Keras/TFLite APIs this add-on
+# uses (MobileNetV2, INT8 post-training quantization), just an older point
+# release. Moving to a newer Python would mean reworking the base image the
+# whole camera/streaming pipeline is already built on, which is a separate,
+# riskier change from adding classification.
+tensorflow-cpu==2.13.*

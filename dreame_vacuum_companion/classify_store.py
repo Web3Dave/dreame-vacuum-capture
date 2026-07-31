@@ -36,18 +36,24 @@ class AssignError(ValueError):
     """A label could not be assigned, with a reason worth showing."""
 
 
-def _safe_component(value: str) -> str:
-    """A single path segment, not a path - no slashes, no traversal."""
+def safe_component(value: str) -> str:
+    """A single path segment, not a path - no slashes, no traversal.
+
+    Public: classify_train and classify_infer use the same rule to name a
+    classification's model directory, and it needs to agree with this
+    module's dataset directory exactly, or a model would train against one
+    folder and load from another.
+    """
     cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in (value or "").strip())
     return cleaned.strip("_")[:64]
 
 
 def dataset_dir(classifier_id: str) -> str:
-    return os.path.join(DATASET_ROOT, _safe_component(classifier_id), "dataset")
+    return os.path.join(DATASET_ROOT, safe_component(classifier_id), "dataset")
 
 
 def label_dir(classifier_id: str, label: str) -> str:
-    return os.path.join(dataset_dir(classifier_id), _safe_component(label))
+    return os.path.join(dataset_dir(classifier_id), safe_component(label))
 
 
 def dataset_counts(classifier_id: str) -> dict[str, int]:

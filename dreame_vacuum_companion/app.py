@@ -449,6 +449,8 @@ def capture():
         if owns_session:
             _safe_disconnect(protocol)
 
+    _classify_snapshot_async(tag, snapshot_path)
+
     return jsonify({
         "success": True,
         "path": snapshot_path,
@@ -459,6 +461,47 @@ def capture():
         "media_path": os.path.relpath(snapshot_path, MEDIA_ROOT),
         "latest_media_path": os.path.relpath(latest_path, MEDIA_ROOT),
     })
+
+
+def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
+    """Run every enabled, trained classification linked to this tag and
+    broadcast the result over MQTT.
+
+    Backgrounded rather than run inline: the vacuum's integration is waiting
+    on this request, and while TFLite inference itself is fast, an MQTT
+    broker that is slow or unreachable must not be the reason a snapshot
+    capture takes longer to answer. Nothing here writes to the training
+    dataset - that only happens when a person assigns a label by hand, so an
+    uncertain guess can never quietly teach the model to repeat itself.
+    """
+    def run():
+        try:
+            import classify_infer
+            import config_store
+            import mqtt_publish
+
+            for classifier in config_store.list_classifiers():
+                if not (classifier["enabled"] and classifier["configured"]):
+                    continue
+                link = next((t for t in classifier["tags"] if t["tag_id"] == tag), None)
+                if not link:
+                    continue
+                result = classify_infer.classify(classifier["id"], snapshot_path, link["crop"])
+                if result is None:
+                    continue
+                label, score = result
+                if score < classifier["threshold"]:
+                    continue
+                mqtt_publish.publish_result(
+                    classifier["id"], classifier["name"], classifier["classification_type"],
+                    label, score, tag_id=tag, filename=os.path.basename(snapshot_path),
+                )
+        except Exception:  # noqa: BLE001 - a background task must not crash the process
+            app.logger.warning(
+                "Classification failed for tag %s (snapshot capture already succeeded)",
+                tag, exc_info=True)
+
+    threading.Thread(target=run, daemon=True).start()
 
 
 def _spawn_ffmpeg_republish(live_url, rtsp_url):

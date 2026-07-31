@@ -75,6 +75,8 @@
                            color:var(--muted); text-transform:capitalize; }
     .summary .type-badge.on { color:var(--ok); border-color:var(--ok); }
     .summary .off { color:var(--bad); }
+    .training { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
+    .training-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
     dialog { border:1px solid var(--line); border-radius:14px; background:var(--card);
              color:var(--text); padding:0; width:min(460px,94vw); }
@@ -278,8 +280,70 @@
             <button type="button" data-link="${esc(c.id)}">Link tag</button>
           </div>` : ""}
           <div class="configure">${configureSection(c)}</div>
+          ${c.configured ? `<div class="training" id="training-${esc(c.id)}">
+            <p class="hint" style="margin:10px 0 0">Loading training status&hellip;</p>
+          </div>` : ""}
         </div>`;
       }).join("");
+      refreshTrainingStatus();
+    }
+
+    // ---- training ----------------------------------------------------------
+    let trainingPoll = null;
+
+    async function refreshTrainingStatus() {
+      const configured = classifications.filter(c => c.configured);
+      let anyTraining = false;
+      await Promise.all(configured.map(async c => {
+        const el = document.getElementById(`training-${c.id}`);
+        if (!el) return;
+        const res = await fetch(`${BASE}/api/classifications/${c.id}/train/status`);
+        const body = await res.json().catch(() => ({}));
+        if (!res.ok) return;
+        if (body.status && body.status.state === "training") anyTraining = true;
+        el.innerHTML = renderTraining(c, body.status || {state: "none"}, body.readiness);
+      }));
+      // Keep polling only while something is actually training - the rest of
+      // the time this page is static, and polling would just be noise.
+      clearTimeout(trainingPoll);
+      if (anyTraining) trainingPoll = setTimeout(refreshTrainingStatus, 2500);
+    }
+
+    function renderTraining(c, status, readiness) {
+      const state = status.state || "none";
+      const counts = readiness ? Object.entries(readiness.counts)
+        .map(([label, n]) => `${esc(label)}: ${n}`).join(", ") : "";
+      const countsLine = readiness
+        ? `<span class="hint" style="margin:0">${counts} (need ${readiness.minimum}+ each)</span>` : "";
+
+      let statusLine = "";
+      if (state === "training") {
+        statusLine = `<span class="hint" style="margin:0">Training&hellip; this can take a
+          minute or two.</span>`;
+      } else if (state === "complete") {
+        const when = status.finished_at ? new Date(status.finished_at * 1000).toLocaleString() : "";
+        statusLine = `<span class="hint" style="margin:0">Trained on ` +
+          `${status.image_count ?? "?"} images ${when ? `&middot; ${when}` : ""}</span>`;
+      } else if (state === "failed") {
+        statusLine = `<span class="err" style="margin:0">Training failed: ${esc(status.error || "unknown error")}</span>`;
+      }
+
+      const disabled = state === "training" || !(readiness && readiness.ready);
+      const label = state === "training" ? "Training…" : (state === "complete" ? "Retrain" : "Train");
+
+      return `
+        <div class="training-row">
+          <button type="button" data-train="${esc(c.id)}"${disabled ? " disabled" : ""}>${label}</button>
+          ${countsLine}
+        </div>
+        ${statusLine ? `<div style="margin-top:4px">${statusLine}</div>` : ""}`;
+    }
+
+    async function startTraining(cid) {
+      const res = await fetch(`${BASE}/api/classifications/${cid}/train`, {method: "POST"});
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(body.message || "Could not start training"); return; }
+      refreshTrainingStatus();
     }
 
     /**
@@ -525,6 +589,7 @@
       else if (t.dataset.configure) { editingConfig = t.dataset.configure; render(); }
       else if (t.dataset.configureCancel) { editingConfig = null; render(); }
       else if (t.dataset.configureSave) { await saveConfigure(t.dataset.configureSave); }
+      else if (t.dataset.train) { t.disabled = true; await startTraining(t.dataset.train); }
       else if (t.id === "mn-save") await saveModelSource();
     });
 

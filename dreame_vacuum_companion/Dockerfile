@@ -60,6 +60,9 @@ COPY app.py .
 COPY store.py .
 COPY config_store.py .
 COPY classify_store.py .
+COPY classify_train.py .
+COPY classify_infer.py .
+COPY mqtt_publish.py .
 COPY steps.py .
 COPY ha_client.py .
 COPY ui.py .

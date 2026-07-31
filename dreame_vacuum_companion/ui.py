@@ -25,6 +25,7 @@ import ha_client
 import yaml
 
 import classify_store
+import classify_train
 import config_store
 import steps as step_schema
 import store
@@ -345,6 +346,27 @@ def api_configure_classification(cid):
     except config_store.ConfigError as err:
         return jsonify({"error": str(err)}), 400
     return jsonify({"classification": updated})
+
+
+@app.route("/api/classifications/<cid>/train", methods=["POST"])
+def api_train_classification(cid):
+    started, message = classify_train.start_training(cid)
+    return jsonify({"success": started, "message": message}), (200 if started else 400)
+
+
+@app.route("/api/classifications/<cid>/train/status")
+def api_train_status(cid):
+    """Training progress and dataset readiness together - what the Train
+    button and its status line on the Classifications tab poll."""
+    classifier = config_store.get_classifier(cid)
+    if not classifier:
+        return jsonify({"error": "No such classification"}), 404
+    status = classify_train.read_status(cid)
+    readiness = (
+        classify_train.dataset_readiness(cid, classifier["classes"])
+        if classifier["configured"] else None
+    )
+    return jsonify({"status": status, "readiness": readiness})
 
 
 def _valid_crop(crop):
