@@ -617,6 +617,30 @@ def save_settings(mobilenet_weights_path, device=None):
     return get_settings()
 
 
+def get_classification_webhook_url():
+    """Where to POST classification results, pushed by the dreame_vacuum_core
+    integration itself on startup - nothing for a person to configure.
+
+    Kept out of get_settings()/save_settings() deliberately: those are what
+    the Settings tab reads and writes, and a save from that form must not be
+    able to wipe out a value only the integration is meant to set.
+    """
+    settings = load().get("settings") or {}
+    return settings.get("classification_webhook_url") or None
+
+
+def save_classification_webhook_url(url):
+    with _lock:
+        data = load()
+        candidate = copy.deepcopy(data)
+        section = candidate.get("settings")
+        if not isinstance(section, dict):
+            section = candidate["settings"] = {}
+        section["classification_webhook_url"] = str(url or "").strip() or None
+        validate(candidate)
+        _write(candidate)
+
+
 # -- migration ------------------------------------------------------------
 def migrate_from_sqlite(store) -> bool:
     """Write the config file from the old SQLite tables, once.

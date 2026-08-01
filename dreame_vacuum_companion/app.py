@@ -466,12 +466,12 @@ def capture():
 
 def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
     """Run every enabled, trained classification linked to this tag, record
-    what each one made of the snapshot, and broadcast qualifying results over
-    MQTT.
+    what each one made of the snapshot, and push qualifying results to the
+    dreame_vacuum_core integration.
 
     Backgrounded rather than run inline: the vacuum's integration is waiting
-    on this request, and while TFLite inference itself is fast, an MQTT
-    broker that is slow or unreachable must not be the reason a snapshot
+    on this request, and while TFLite inference itself is fast, Home
+    Assistant being slow or unreachable must not be the reason a snapshot
     capture takes longer to answer. Nothing here writes to the training
     dataset - that only happens when a person assigns a label by hand, so an
     uncertain guess can never quietly teach the model to repeat itself.
@@ -480,8 +480,8 @@ def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
         try:
             import classify_infer
             import classify_store
+            import classify_push
             import config_store
-            import mqtt_publish
 
             for classifier in config_store.list_classifiers():
                 if not (classifier["enabled"] and classifier["configured"]):
@@ -503,7 +503,7 @@ def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
                 )
                 if score < classifier["threshold"]:
                     continue
-                mqtt_publish.publish_result(
+                classify_push.publish_result(
                     classifier["id"], classifier["name"], classifier["classification_type"],
                     classifier["classes"], label, score,
                     tag_id=tag, filename=os.path.basename(snapshot_path),
@@ -857,7 +857,15 @@ def register():
     The integration is authoritative about which devices belong to it, so the
     companion UI never has to infer ownership from an entity-registry dump.
     Expected body:
-      {"entry_id": "...", "devices": [{"did","name","model","entities":{...}}]}
+      {"entry_id": "...", "devices": [{"did","name","model","entities":{...}}],
+       "classification_webhook_url": "http://.../api/webhook/..."}
+
+    classification_webhook_url is optional and unrelated to device ownership -
+    it rides along on the same call because the integration already pushes
+    this on every startup, so there is nothing extra for a person to trigger.
+    Stored even though this endpoint may be called once per vacuum: it is the
+    same URL each time from the one Home Assistant instance this add-on talks
+    to, so the last write is harmless.
     """
     body = _require_body("entry_id", "devices")
     devices = body["devices"]
@@ -865,6 +873,9 @@ def register():
         abort(400, "devices must be a list")
     count = store.register_devices(str(body["entry_id"]), devices)
     app.logger.warning("registered %d device(s) from entry %s", count, body["entry_id"])
+    webhook_url = body.get("classification_webhook_url")
+    if webhook_url:
+        config_store.save_classification_webhook_url(webhook_url)
     return jsonify({"success": True, "registered": count})
 
 

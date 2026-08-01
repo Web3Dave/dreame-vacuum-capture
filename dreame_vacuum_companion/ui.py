@@ -29,7 +29,7 @@ import classify_infer
 import classify_store
 import classify_train
 import config_store
-import mqtt_publish
+import classify_push
 import steps as step_schema
 import store
 
@@ -755,13 +755,13 @@ def api_rerun_classifiers(tag_id, filename):
     the 'Rerun classifiers' action.
 
     Runs regardless of a classifier's `enabled` flag: enabled governs the
-    automatic behaviour at capture time (and whether MQTT gets a message),
-    not whether a person is allowed to see what a classifier currently makes
-    of a photo. MQTT still only hears about it when the classifier is
-    enabled - a disabled classifier's Home Assistant entity should not move
-    just because someone tested it from this page. A classifier with no
-    trained model yet is skipped, not reported as an error - "nothing to
-    show" is what View classifications is for.
+    automatic behaviour at capture time (and whether the integration gets a
+    push), not whether a person is allowed to see what a classifier
+    currently makes of a photo. The integration still only hears about it
+    when the classifier is enabled - a disabled classifier's Home Assistant
+    entity should not move just because someone tested it from this page. A
+    classifier with no trained model yet is skipped, not reported as an
+    error - "nothing to show" is what View classifications is for.
     """
     safe_tag = _safe_tag(tag_id)
     safe_file = os.path.basename(filename)
@@ -789,7 +789,7 @@ def api_rerun_classifiers(tag_id, filename):
         ran.append({"classifier_id": classifier["id"], "name": classifier["name"],
                     "label": label, "score": score, "threshold": classifier["threshold"]})
         if classifier["enabled"] and score >= classifier["threshold"]:
-            mqtt_publish.publish_result(
+            classify_push.publish_result(
                 classifier["id"], classifier["name"], classifier["classification_type"],
                 classifier["classes"], label, score,
                 tag_id=safe_tag, filename=safe_file,
