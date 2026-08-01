@@ -120,6 +120,15 @@ def _announce(classifier_id: str, name: str, classes: list[str]) -> None:
             "json_attributes_topic": f"{base}/attributes",
             "icon": "mdi:tag-text-outline",
             "device": device,
+            # A generic MQTT-discovered entity only fires state_changed when
+            # the value actually differs from last time - unlike Frigate's
+            # own classification sensor, which is a native entity that calls
+            # async_write_ha_state() straight from its MQTT callback and so
+            # has no such filter. Without this, a `state` trigger automation
+            # never fires on a second consecutive identical result (a door
+            # classified Closed twice in a row, say) even though the
+            # classifier genuinely ran and published both times.
+            "force_update": True,
         }),
         qos=0, retain=True,
     )
@@ -134,6 +143,7 @@ def _announce(classifier_id: str, name: str, classes: list[str]) -> None:
             "device_class": "timestamp",
             "entity_category": "diagnostic",
             "device": device,
+            "force_update": True,
         }),
         qos=0, retain=True,
     )
@@ -154,6 +164,11 @@ def _announce(classifier_id: str, name: str, classes: list[str]) -> None:
                 "payload_on": "ON",
                 "payload_off": "OFF",
                 "device": device,
+                # Same reasoning as the state sensor above: a run that
+                # confirms Closed twice in a row must fire this ON twice,
+                # not be swallowed as "no change" - a state trigger on this
+                # binary sensor is exactly what "run every time" needs.
+                "force_update": True,
             }),
             qos=0, retain=True,
         )
