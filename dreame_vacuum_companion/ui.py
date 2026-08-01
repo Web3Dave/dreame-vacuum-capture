@@ -791,7 +791,8 @@ def api_rerun_classifiers(tag_id, filename):
         if classifier["enabled"] and score >= classifier["threshold"]:
             mqtt_publish.publish_result(
                 classifier["id"], classifier["name"], classifier["classification_type"],
-                label, score, tag_id=safe_tag, filename=safe_file,
+                classifier["classes"], label, score,
+                tag_id=safe_tag, filename=safe_file,
             )
     return jsonify({"ran": ran})
 

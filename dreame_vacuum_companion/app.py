@@ -505,7 +505,8 @@ def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
                     continue
                 mqtt_publish.publish_result(
                     classifier["id"], classifier["name"], classifier["classification_type"],
-                    label, score, tag_id=tag, filename=os.path.basename(snapshot_path),
+                    classifier["classes"], label, score,
+                    tag_id=tag, filename=os.path.basename(snapshot_path),
                 )
         except Exception:  # noqa: BLE001 - a background task must not crash the process
             app.logger.warning(

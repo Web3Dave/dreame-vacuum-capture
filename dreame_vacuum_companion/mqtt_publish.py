@@ -10,12 +10,18 @@ broker is present, this just works, and if it is not, classification results
 are logged once and otherwise skipped rather than the add-on refusing to
 start.
 
-Each classification is also announced once as an MQTT-discovered sensor, so
-an automation can be built by picking it from Home Assistant's entity list
-rather than having to know the raw topic.
+Each classification is announced as MQTT-discovered entities, grouped under
+a device of its own - state, last-updated, and one binary sensor per class -
+so an automation can be built by picking one from Home Assistant's entity
+list, and a classifier's sensors sit together rather than in one long flat
+list for the whole add-on. Frigate does not do this: it groups a model's
+sensor under whichever camera it runs on, or under the whole server for a
+"global" one, because a model is not a first-class thing in its device
+hierarchy. A classifier is, here - so it gets a device to itself.
 """
 from __future__ import annotations
 
+import datetime
 import json
 import logging
 import os
@@ -28,17 +34,12 @@ logger = logging.getLogger(__name__)
 BASE_TOPIC = "dreame_vacuum_companion"
 DISCOVERY_PREFIX = "homeassistant"
 
-# One virtual device groups every classification's sensor together in Home
-# Assistant's UI, rather than each showing up as its own unrelated device.
-DEVICE = {
-    "identifiers": ["dreame_vacuum_companion_classify"],
-    "name": "Dreame Vacuum Companion",
-    "model": "Snapshot classification",
-}
-
 _lock = threading.Lock()
 _client: mqtt.Client | None = None
-_announced: set[str] = set()
+# classifier_id -> the class list it was last announced with. Re-announcing
+# whenever this changes (rather than once ever) is what lets renaming a
+# class, or adding one, show up without an add-on restart.
+_announced: dict[str, list[str]] = {}
 _warned_unavailable = False
 
 
@@ -74,54 +75,133 @@ def _client_or_none() -> mqtt.Client | None:
         return _client
 
 
-def _announce(classifier_id: str, name: str, classification_type: str) -> None:
-    """Publish (once per process) the discovery config that turns this
-    classification's topic into a proper Home Assistant sensor entity."""
-    if classifier_id in _announced:
+def _slug(value: str) -> str:
+    """A class name as an MQTT topic segment and entity id suffix - not
+    stored anywhere, just kept stable and free of characters a topic or a
+    unique_id should not carry."""
+    cleaned = "".join(c if (c.isalnum() or c in "-_") else "_" for c in value.strip())
+    return cleaned.strip("_").lower()[:48] or "class"
+
+
+def _device(classifier_id: str, name: str) -> dict:
+    return {
+        "identifiers": [f"dreame_classify_{classifier_id}"],
+        "name": name,
+        "model": "Snapshot classification",
+        "manufacturer": "Dreame Vacuum Companion",
+    }
+
+
+def _announce(classifier_id: str, name: str, classes: list[str]) -> None:
+    """Publish the discovery configs that turn this classification's topics
+    into Home Assistant entities: a state sensor, a last-updated timestamp,
+    and one binary sensor per class - all grouped under one device.
+
+    Re-announced whenever the class list actually changes, not only the
+    first time - editing a classifier's classes on the Classifications tab
+    should not need an add-on restart to show up as different entities.
+    """
+    if _announced.get(classifier_id) == classes:
         return
     client = _client_or_none()
     if client is None:
         return
-    unique_id = f"dreame_classify_{classifier_id}"
-    payload = {
-        "name": name,
-        "unique_id": unique_id,
-        "state_topic": f"{BASE_TOPIC}/classification/{classifier_id}/state",
-        "json_attributes_topic": f"{BASE_TOPIC}/classification/{classifier_id}/attributes",
-        "icon": "mdi:tag-text-outline",
-        "device": DEVICE,
-    }
-    # classification_type does not change what gets published - see
-    # config_store's CLASSIFICATION_TYPES docstring for why: unlike Frigate,
-    # nothing here shares one slot on a tracked object, so sub_label and
-    # attribute publish identically. It travels in the attributes payload
-    # purely as information for whoever is looking at the entity.
+
+    device = _device(classifier_id, name)
+    base = f"{BASE_TOPIC}/classification/{classifier_id}"
+
+    state_uid = f"dreame_classify_{classifier_id}"
     client.publish(
-        f"{DISCOVERY_PREFIX}/sensor/{unique_id}/config",
-        json.dumps(payload), qos=0, retain=True,
+        f"{DISCOVERY_PREFIX}/sensor/{state_uid}/config",
+        json.dumps({
+            "name": "State",
+            "unique_id": state_uid,
+            "state_topic": f"{base}/state",
+            "json_attributes_topic": f"{base}/attributes",
+            "icon": "mdi:tag-text-outline",
+            "device": device,
+        }),
+        qos=0, retain=True,
     )
-    _announced.add(classifier_id)
+
+    updated_uid = f"{state_uid}_last_updated"
+    client.publish(
+        f"{DISCOVERY_PREFIX}/sensor/{updated_uid}/config",
+        json.dumps({
+            "name": "Last updated",
+            "unique_id": updated_uid,
+            "state_topic": f"{base}/last_updated",
+            "device_class": "timestamp",
+            "entity_category": "diagnostic",
+            "device": device,
+        }),
+        qos=0, retain=True,
+    )
+
+    # A class dropped from the classifier's list stops being announced, but
+    # its old discovery config is not retracted here - doing that safely
+    # needs the *previous* class list, which the caller does not have once
+    # config_store has already been edited. A stray disabled-looking entity
+    # for a renamed-away class is the acceptable side of that trade.
+    for class_name in classes:
+        uid = f"{state_uid}_{_slug(class_name)}"
+        client.publish(
+            f"{DISCOVERY_PREFIX}/binary_sensor/{uid}/config",
+            json.dumps({
+                "name": class_name,
+                "unique_id": uid,
+                "state_topic": f"{base}/class/{_slug(class_name)}/state",
+                "payload_on": "ON",
+                "payload_off": "OFF",
+                "device": device,
+            }),
+            qos=0, retain=True,
+        )
+
+    _announced[classifier_id] = list(classes)
 
 
 def publish_result(classifier_id: str, name: str, classification_type: str,
-                    label: str, score: float, *, tag_id: str, filename: str) -> None:
+                    classes: list[str], label: str, score: float, *,
+                    tag_id: str, filename: str) -> None:
     """Best-effort: a broker that is briefly unreachable must never be the
     reason a classification result is lost from the caller's point of view -
-    the label is already saved to the dataset by this point regardless."""
+    the label is already saved to the dataset by this point regardless.
+    """
     client = _client_or_none()
     if client is None:
         return
     try:
-        _announce(classifier_id, name, classification_type)
-        client.publish(f"{BASE_TOPIC}/classification/{classifier_id}/state",
-                       label, qos=0, retain=True)
+        _announce(classifier_id, name, classes)
+        now = datetime.datetime.now(datetime.timezone.utc)
+        base = f"{BASE_TOPIC}/classification/{classifier_id}"
+
+        client.publish(f"{base}/state", label, qos=0, retain=True)
         client.publish(
-            f"{BASE_TOPIC}/classification/{classifier_id}/attributes",
+            f"{base}/attributes",
             json.dumps({
                 "score": score, "tag": tag_id, "filename": filename,
                 "classification_type": classification_type,
+                "ran_at": int(now.timestamp()),
             }),
             qos=0, retain=True,
         )
+        # ISO 8601 on its own topic rather than a Jinja value_template
+        # reading the timestamp back out of the attributes JSON - simpler to
+        # read on the wire, and avoids the discovery config needing to agree
+        # with this function about the attributes payload's exact shape.
+        client.publish(f"{base}/last_updated", now.isoformat(), qos=0, retain=True)
+
+        # One retained ON/OFF per class, computed here rather than as an MQTT
+        # value_template comparing against the class name: a class name is
+        # free text a person typed into a form, and safely embedding it in a
+        # Jinja string literal (quotes, braces) is a problem worth just not
+        # having. Every class gets a message, including the ones that did
+        # not win, so a class that used to be true and no longer is actually
+        # turns off instead of sitting stale at its last ON.
+        for class_name in classes:
+            state = "ON" if class_name == label else "OFF"
+            client.publish(f"{base}/class/{_slug(class_name)}/state",
+                           state, qos=0, retain=True)
     except Exception:  # noqa: BLE001 - publishing must never break the caller
         logger.exception("Could not publish classification result for %s", classifier_id)
