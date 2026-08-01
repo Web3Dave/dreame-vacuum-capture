@@ -450,7 +450,7 @@ def capture():
         if owns_session:
             _safe_disconnect(protocol)
 
-    _classify_snapshot_async(tag, snapshot_path)
+    classifications = _classify_snapshot(tag, snapshot_path)
 
     return jsonify({
         "success": True,
@@ -461,59 +461,69 @@ def capture():
         # path needs - callers should not have to strip a prefix themselves.
         "media_path": os.path.relpath(snapshot_path, MEDIA_ROOT),
         "latest_media_path": os.path.relpath(latest_path, MEDIA_ROOT),
+        # The dreame_vacuum_core integration is always the one that asked for
+        # this snapshot - even a task run from this add-on's own UI still
+        # takes the photo via the `vacuum.take_snapshot` Home Assistant
+        # service, which the integration alone can fulfil. So riding the
+        # result back on this response, rather than the add-on pushing it
+        # out separately afterward, reaches Home Assistant with no second
+        # connection and no separate credential to manage.
+        "classifications": classifications,
     })
 
 
-def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
-    """Run every enabled, trained classification linked to this tag, record
-    what each one made of the snapshot, and push qualifying results to the
-    dreame_vacuum_core integration.
+def _classify_snapshot(tag: str, snapshot_path: str) -> list:
+    """Run every enabled, trained classification linked to this tag and
+    record what each one made of the snapshot.
 
-    Backgrounded rather than run inline: the vacuum's integration is waiting
-    on this request, and while TFLite inference itself is fast, Home
-    Assistant being slow or unreachable must not be the reason a snapshot
-    capture takes longer to answer. Nothing here writes to the training
-    dataset - that only happens when a person assigns a label by hand, so an
-    uncertain guess can never quietly teach the model to repeat itself.
+    Run inline rather than backgrounded: TFLite inference is local and fast,
+    and the caller needs the results to include in its own response. Nothing
+    here writes to the training dataset - that only happens when a person
+    assigns a label by hand, so an uncertain guess can never quietly teach
+    the model to repeat itself.
     """
-    def run():
-        try:
-            import classify_infer
-            import classify_store
-            import classify_push
-            import config_store
+    results = []
+    try:
+        import classify_infer
+        import classify_store
+        import config_store
 
-            for classifier in config_store.list_classifiers():
-                if not (classifier["enabled"] and classifier["configured"]):
-                    continue
-                link = next((t for t in classifier["tags"] if t["tag_id"] == tag), None)
-                if not link:
-                    continue
-                result = classify_infer.classify(classifier["id"], snapshot_path, link["crop"])
-                if result is None:
-                    continue
-                label, score = result
-                # Recorded regardless of threshold - View classifications on
-                # the tag detail page is exactly where a below-threshold
-                # result (shown there in red) is supposed to be visible, not
-                # somewhere that quietly never learns it happened.
-                classify_store.save_result(
-                    tag, os.path.basename(snapshot_path), classifier["id"], classifier["name"],
-                    label, score, classifier["threshold"],
-                )
-                if score < classifier["threshold"]:
-                    continue
-                classify_push.publish_result(
-                    classifier["id"], classifier["name"], classifier["classification_type"],
-                    classifier["classes"], label, score,
-                    tag_id=tag, filename=os.path.basename(snapshot_path),
-                )
-        except Exception:  # noqa: BLE001 - a background task must not crash the process
-            app.logger.warning(
-                "Classification failed for tag %s (snapshot capture already succeeded)",
-                tag, exc_info=True)
-
-    threading.Thread(target=run, daemon=True).start()
+        for classifier in config_store.list_classifiers():
+            if not (classifier["enabled"] and classifier["configured"]):
+                continue
+            link = next((t for t in classifier["tags"] if t["tag_id"] == tag), None)
+            if not link:
+                continue
+            result = classify_infer.classify(classifier["id"], snapshot_path, link["crop"])
+            if result is None:
+                continue
+            label, score = result
+            # Recorded regardless of threshold - View classifications on the
+            # tag detail page is exactly where a below-threshold result
+            # (shown there in red) is supposed to be visible, not somewhere
+            # that quietly never learns it happened.
+            classify_store.save_result(
+                tag, os.path.basename(snapshot_path), classifier["id"], classifier["name"],
+                label, score, classifier["threshold"],
+            )
+            if score < classifier["threshold"]:
+                continue
+            results.append({
+                "classifier_id": classifier["id"],
+                "name": classifier["name"],
+                "classification_type": classifier["classification_type"],
+                "classes": classifier["classes"],
+                "label": label,
+                "score": score,
+                "tag_id": tag,
+                "filename": os.path.basename(snapshot_path),
+                "ran_at": int(time.time()),
+            })
+    except Exception:  # noqa: BLE001 - classification must never break a capture
+        app.logger.warning(
+            "Classification failed for tag %s (snapshot capture already succeeded)",
+            tag, exc_info=True)
+    return results
 
 
 def _spawn_ffmpeg_republish(live_url, rtsp_url):
@@ -857,15 +867,7 @@ def register():
     The integration is authoritative about which devices belong to it, so the
     companion UI never has to infer ownership from an entity-registry dump.
     Expected body:
-      {"entry_id": "...", "devices": [{"did","name","model","entities":{...}}],
-       "classification_webhook_url": "http://.../api/webhook/..."}
-
-    classification_webhook_url is optional and unrelated to device ownership -
-    it rides along on the same call because the integration already pushes
-    this on every startup, so there is nothing extra for a person to trigger.
-    Stored even though this endpoint may be called once per vacuum: it is the
-    same URL each time from the one Home Assistant instance this add-on talks
-    to, so the last write is harmless.
+      {"entry_id": "...", "devices": [{"did","name","model","entities":{...}}]}
     """
     body = _require_body("entry_id", "devices")
     devices = body["devices"]
@@ -873,9 +875,6 @@ def register():
         abort(400, "devices must be a list")
     count = store.register_devices(str(body["entry_id"]), devices)
     app.logger.warning("registered %d device(s) from entry %s", count, body["entry_id"])
-    webhook_url = body.get("classification_webhook_url")
-    if webhook_url:
-        config_store.save_classification_webhook_url(webhook_url)
     return jsonify({"success": True, "registered": count})
 
 

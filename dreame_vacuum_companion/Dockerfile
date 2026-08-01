@@ -63,7 +63,6 @@ COPY classify_store.py .
 COPY classify_train.py .
 COPY classify_infer.py .
 COPY classify_download.py .
-COPY classify_push.py .
 COPY steps.py .
 COPY ha_client.py .
 COPY ui.py .

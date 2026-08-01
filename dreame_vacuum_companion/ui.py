@@ -29,7 +29,6 @@ import classify_infer
 import classify_store
 import classify_train
 import config_store
-import classify_push
 import steps as step_schema
 import store
 
@@ -754,14 +753,18 @@ def api_rerun_classifiers(tag_id, filename):
     """Run every classifier linked to this tag against this one snapshot -
     the 'Rerun classifiers' action.
 
-    Runs regardless of a classifier's `enabled` flag: enabled governs the
-    automatic behaviour at capture time (and whether the integration gets a
-    push), not whether a person is allowed to see what a classifier
-    currently makes of a photo. The integration still only hears about it
-    when the classifier is enabled - a disabled classifier's Home Assistant
-    entity should not move just because someone tested it from this page. A
-    classifier with no trained model yet is skipped, not reported as an
-    error - "nothing to show" is what View classifications is for.
+    Runs regardless of a classifier's `enabled` flag: enabled only governs
+    the automatic behaviour at capture time, not whether a person is allowed
+    to see what a classifier currently makes of a photo. A classifier with
+    no trained model yet is skipped, not reported as an error - "nothing to
+    show" is what View classifications is for.
+
+    Results here never reach Home Assistant - this is a browser action
+    against this add-on's own UI, not a snapshot taken through the
+    integration's `vacuum.take_snapshot` service, so there is no in-flight
+    request to the integration to carry a result back on. That is a
+    deliberate trade: this button is for a person inspecting a photo, not
+    for driving automations.
     """
     safe_tag = _safe_tag(tag_id)
     safe_file = os.path.basename(filename)
@@ -788,12 +791,6 @@ def api_rerun_classifiers(tag_id, filename):
         )
         ran.append({"classifier_id": classifier["id"], "name": classifier["name"],
                     "label": label, "score": score, "threshold": classifier["threshold"]})
-        if classifier["enabled"] and score >= classifier["threshold"]:
-            classify_push.publish_result(
-                classifier["id"], classifier["name"], classifier["classification_type"],
-                classifier["classes"], label, score,
-                tag_id=safe_tag, filename=safe_file,
-            )
     return jsonify({"ran": ran})
 
 
