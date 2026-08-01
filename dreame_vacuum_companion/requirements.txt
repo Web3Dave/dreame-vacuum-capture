@@ -15,3 +15,13 @@ Pillow
 # whole camera/streaming pipeline is already built on, which is a separate,
 # riskier change from adding classification.
 tensorflow-cpu==2.13.*
+# Keras's ImageDataGenerator calls into scipy's affine-transform code as part
+# of its normal per-image pipeline even with no augmentation args set - not
+# an optional extra, training fails immediately without it ("name 'scipy' is
+# not defined", since Keras's own ImportError fallback doesn't bind the name
+# at all). Frigate never needs this pin because scipy already arrives
+# transitively through its own larger dependency set; this add-on's is
+# smaller, so it has to ask for it directly. 1.10 rather than latest for the
+# same reason as the tensorflow-cpu pin above: scipy dropped Python 3.8
+# support at 1.11.
+scipy==1.10.*
