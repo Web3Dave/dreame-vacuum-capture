@@ -1,14 +1,22 @@
 """Broadcast a classification result over MQTT.
 
-Connection details come from Home Assistant's own MQTT service discovery,
-not from add-on options: `services: [mqtt:want]` in config.yaml makes the
-Supervisor inject MQTT_HOST/MQTT_PORT/MQTT_USERNAME/MQTT_PASSWORD into the
-container automatically whenever an MQTT broker add-on (Mosquitto, most
-commonly) is running - the same mechanism Frigate's own add-on relies on.
-Nobody has to go find a password and paste it into a text field; if the
-broker is present, this just works, and if it is not, classification results
-are logged once and otherwise skipped rather than the add-on refusing to
-start.
+Connection details come from Home Assistant's own MQTT service discovery
+first: `services: [mqtt:want]` in config.yaml makes the Supervisor inject
+MQTT_HOST/MQTT_PORT/MQTT_USERNAME/MQTT_PASSWORD into the container
+automatically whenever an MQTT broker add-on (Mosquitto, most commonly) is
+running - the same mechanism Frigate's own add-on relies on. Nobody has to
+go find a password and paste it into a text field for this to work.
+
+That discovery depends on the broker actually registering itself with the
+Supervisor, though, and on this add-on having been restarted since it last
+did - neither of which is guaranteed, and neither of which is something a
+person can fix by re-reading documentation. So the add-on's own options
+(mqtt_host/mqtt_port/mqtt_username/mqtt_password, all optional) exist as a
+manual override: anything set there wins over whatever was injected, the
+same "explicit beats automatic, automatic is still tried first" rule
+mobilenet_weights_path already uses for the base model. If the broker is
+never found and nothing is set here, classification results are logged
+once and otherwise skipped rather than the add-on refusing to start.
 
 Each classification is announced as MQTT-discovered entities, grouped under
 a device of its own - state, last-updated, and one binary sensor per class -
@@ -33,6 +41,7 @@ logger = logging.getLogger(__name__)
 
 BASE_TOPIC = "dreame_vacuum_companion"
 DISCOVERY_PREFIX = "homeassistant"
+OPTIONS_PATH = "/data/options.json"
 
 _lock = threading.Lock()
 _client: mqtt.Client | None = None
@@ -72,12 +81,42 @@ def _on_disconnect(client, userdata, disconnect_flags, reason_code, properties=N
         logger.warning("Disconnected from the MQTT broker (%s)", reason_code)
 
 
+def _addon_options() -> dict:
+    try:
+        with open(OPTIONS_PATH) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
+
+
+def _connection_settings() -> tuple[str | None, int, str | None, str | None]:
+    """(host, port, username, password) - whatever was typed into the
+    add-on's own options, falling back to whatever Supervisor discovered.
+
+    An empty string in options.json (the field left blank) must fall
+    through to the env var, not be treated as "the user wants no host" -
+    `or` handles that for free since "" is falsy, which is the whole reason
+    for using it here rather than a None-check.
+    """
+    options = _addon_options()
+    host = options.get("mqtt_host") or os.environ.get("MQTT_HOST")
+    port = options.get("mqtt_port") or os.environ.get("MQTT_PORT") or 1883
+    username = options.get("mqtt_username") or os.environ.get("MQTT_USERNAME")
+    password = options.get("mqtt_password") or os.environ.get("MQTT_PASSWORD")
+    try:
+        port = int(port)
+    except (TypeError, ValueError):
+        port = 1883
+    return host, port, username, password
+
+
 def _connect() -> mqtt.Client | None:
     global _client, _warned_unavailable
-    host = os.environ.get("MQTT_HOST")
+    host, port, username, password = _connection_settings()
     if not host:
         if not _warned_unavailable:
-            logger.info("No MQTT broker available (Supervisor reported none) - "
+            logger.info("No MQTT broker available (Supervisor reported none, and "
+                       "no mqtt_host set in this add-on's own options) - "
                        "classification results will not be broadcast")
             _warned_unavailable = True
         return None
@@ -85,15 +124,14 @@ def _connect() -> mqtt.Client | None:
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
     client.on_connect = _on_connect
     client.on_disconnect = _on_disconnect
-    username = os.environ.get("MQTT_USERNAME")
-    password = os.environ.get("MQTT_PASSWORD")
     if username:
         client.username_pw_set(username, password or None)
     else:
         logger.info("Connecting to MQTT broker %s with no username set "
-                   "(MQTT_USERNAME was empty) - most brokers will refuse this", host)
+                   "(checked this add-on's mqtt_username option and MQTT_USERNAME) "
+                   "- most brokers will refuse this", host)
     try:
-        client.connect(host, int(os.environ.get("MQTT_PORT", 1883)), keepalive=60)
+        client.connect(host, port, keepalive=60)
         client.loop_start()
     except OSError as err:
         logger.warning("Could not connect to MQTT broker at %s: %s", host, err)
