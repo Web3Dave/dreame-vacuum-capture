@@ -43,6 +43,35 @@ _announced: dict[str, list[str]] = {}
 _warned_unavailable = False
 
 
+def _on_connect(client, userdata, connect_flags, reason_code, properties=None) -> None:
+    """The half of a connection failure `connect()` cannot see.
+
+    A TCP handshake can succeed and still be rejected at the MQTT protocol
+    level - wrong or missing credentials, most commonly - and that rejection
+    only ever arrives here, asynchronously, well after connect() has already
+    returned normally. Without this callback that rejection was invisible:
+    no exception, no log line, just a client that looked usable and quietly
+    never delivered anything.
+    """
+    if getattr(reason_code, "is_failure", reason_code != 0):
+        logger.warning(
+            "MQTT broker rejected the connection (%s) - check MQTT_USERNAME/"
+            "MQTT_PASSWORD are actually set (Settings > Add-ons > this add-on "
+            "> should show them once a broker is discovered) and that the "
+            "broker add-on is running", reason_code,
+        )
+    else:
+        logger.info("Connected to MQTT broker")
+
+
+def _on_disconnect(client, userdata, disconnect_flags, reason_code, properties=None) -> None:
+    # Expected during shutdown; anything else is the broker or network
+    # dropping a connection that was working, worth knowing about rather
+    # than just going quiet.
+    if getattr(reason_code, "is_failure", reason_code not in (0, None)):
+        logger.warning("Disconnected from the MQTT broker (%s)", reason_code)
+
+
 def _connect() -> mqtt.Client | None:
     global _client, _warned_unavailable
     host = os.environ.get("MQTT_HOST")
@@ -54,10 +83,15 @@ def _connect() -> mqtt.Client | None:
         return None
 
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2)
+    client.on_connect = _on_connect
+    client.on_disconnect = _on_disconnect
     username = os.environ.get("MQTT_USERNAME")
     password = os.environ.get("MQTT_PASSWORD")
     if username:
         client.username_pw_set(username, password or None)
+    else:
+        logger.info("Connecting to MQTT broker %s with no username set "
+                   "(MQTT_USERNAME was empty) - most brokers will refuse this", host)
     try:
         client.connect(host, int(os.environ.get("MQTT_PORT", 1883)), keepalive=60)
         client.loop_start()
