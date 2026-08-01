@@ -87,8 +87,8 @@
     .shots { flex:1; min-width:0; display:flex; gap:12px; overflow:hidden; }
     .shots figure { flex:0 0 170px; width:170px; }
     figure { margin:0; background:var(--card); border:1px solid var(--line);
-             border-radius:10px; overflow:hidden; }
-    figure a { display:block; line-height:0; }
+             border-radius:10px; overflow:hidden; position:relative; }
+    figure a.open { display:block; line-height:0; }
     figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
     figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
                  font-variant-numeric:tabular-nums; white-space:nowrap;
@@ -97,6 +97,32 @@
                   border:1px solid var(--line); border-radius:10px; background:var(--card);
                   color:var(--muted); text-decoration:none; }
     .shots-more:hover { color:var(--text); border-color:var(--accent); }
+
+    .dots { border:none; background:rgba(20,20,20,.55); color:#fff; width:26px; height:26px;
+            border-radius:999px; cursor:pointer; font-size:16px; line-height:1;
+            display:flex; align-items:center; justify-content:center; padding:0; }
+    .dots:hover { background:rgba(20,20,20,.75); }
+    .dots-anchor { position:absolute; top:8px; right:8px; }
+    .menu { position:absolute; top:32px; right:0; background:var(--card); border:1px solid var(--line);
+            border-radius:8px; box-shadow:0 6px 20px rgba(0,0,0,.18); min-width:190px;
+            padding:4px; z-index:5; }
+    .menu button { display:block; width:100%; text-align:left; padding:8px 10px; font-size:13.5px;
+                   border:none; background:transparent; color:var(--text); border-radius:6px; cursor:pointer; }
+    .menu button:hover { background:rgba(127,127,127,.12); }
+
+    #assign-modal, #results-modal { width:min(440px,94vw); }
+    #results-modal { width:min(560px,94vw); }
+    .result-list { display:flex; flex-direction:column; gap:12px; }
+    .result-row { display:flex; gap:12px; align-items:center; }
+    .result-thumb { flex:none; width:72px; height:72px; border-radius:8px;
+                    background-color:rgba(127,127,127,.15); background-repeat:no-repeat; }
+    .result-info { min-width:0; flex:1; }
+    .result-info .name { font-size:13.5px; font-weight:600; }
+    .result-info .verdict { font-size:15px; font-variant-numeric:tabular-nums; margin-top:2px; }
+    .result-info .verdict.pass { color:var(--ok); }
+    .result-info .verdict.fail { color:var(--bad); }
+    .result-info .when { font-size:12px; color:var(--muted); margin-top:2px; }
+    .result-info .not-run { font-size:13px; color:var(--muted); }
     .shots-more svg { width:18px; height:18px; fill:none; stroke:currentColor;
                       stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
   </style>
@@ -194,6 +220,42 @@
     </div>
   </dialog>
 
+  <dialog id="assign-modal">
+    <div class="dlg-head"><strong style="flex:1">Assign classification</strong></div>
+    <div class="dlg-body">
+      <div id="assign-empty" class="hint" hidden>No classifications are linked to this tag yet -
+        link one from the <a href="{{ base }}/classifications">Classifications</a> tab first.</div>
+      <div id="assign-fields" hidden>
+        <label><span>Classification</span>
+          <select id="assign-classifier"></select>
+        </label>
+        <p class="hint" id="assign-type" style="margin:6px 0 0"></p>
+        <label style="margin-top:12px"><span id="assign-option-label">Value</span>
+          <select id="assign-option"></select>
+        </label>
+        <p class="hint" id="assign-note" hidden></p>
+      </div>
+      <p class="err" id="assign-err" hidden></p>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="assign-cancel">Cancel</button>
+      <button type="button" class="primary" id="assign-save" disabled>Save</button>
+    </div>
+  </dialog>
+
+  <dialog id="results-modal">
+    <div class="dlg-head"><strong style="flex:1">Classifications</strong></div>
+    <div class="dlg-body">
+      <div id="results-empty" class="hint" hidden>No classifications are linked to this tag yet -
+        link one from the <a href="{{ base }}/classifications">Classifications</a> tab first.</div>
+      <div id="results-list" class="result-list"></div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="results-close">Close</button>
+      <button type="button" class="primary" id="results-rerun">Rerun classifiers</button>
+    </div>
+  </dialog>
+
   <script>
     const BASE = "{{ base }}";
     const $ = id => document.getElementById(id);
@@ -240,11 +302,20 @@
             <div class="shots">
               ${t.snapshots.map(s => `
                 <figure>
-                  <a href="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}"
+                  <a class="open" href="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}"
                      target="_blank" rel="noopener">
                     <img loading="lazy" alt="${esc(s.filename)}"
                          src="${BASE}/snapshot/${encodeURIComponent(t.id)}/${encodeURIComponent(s.filename)}">
                   </a>
+                  <div class="dots-anchor">
+                    <button type="button" class="dots" data-menu="${esc(s.filename)}"
+                            data-tag="${esc(t.id)}" aria-label="Options">&#8942;</button>
+                    <div class="menu" hidden>
+                      <button type="button" data-assign="${esc(s.filename)}" data-tag="${esc(t.id)}">Assign classification</button>
+                      <button type="button" data-rerun="${esc(s.filename)}" data-tag="${esc(t.id)}">Rerun classifiers</button>
+                      <button type="button" data-view-results="${esc(s.filename)}" data-tag="${esc(t.id)}">View classifications</button>
+                    </div>
+                  </div>
                   <figcaption>${new Date(s.taken_at * 1000).toLocaleString()}</figcaption>
                 </figure>`).join("")}
             </div>
@@ -298,6 +369,158 @@
       load();
     }
 
+    // ---- snapshot menu: assign / rerun / view classifications -------------
+    // Unlike the tag detail page (one tag, so a single TAG_ID constant), this
+    // page shows snapshots from every tag at once - so which tag a given
+    // menu action applies to travels with the click, in data-tag, rather
+    // than being fixed for the whole page.
+    function closeMenus(except) {
+      for (const menu of document.querySelectorAll(".menu")) {
+        if (menu !== except) menu.hidden = true;
+      }
+    }
+
+    const TYPE_LABEL = {sub_label: "Sub label", attribute: "Attribute"};
+    let assignTagId = null, assignFilename = null;
+
+    async function openAssignModal(tagId, filename) {
+      assignTagId = tagId; assignFilename = filename;
+      $("assign-err").hidden = true;
+      $("assign-save").disabled = true;
+      $("assign-fields").hidden = true;
+      $("assign-empty").hidden = true;
+      $("assign-modal").showModal();
+
+      const res = await fetch(`${BASE}/api/classifications`);
+      const body = await res.json().catch(() => ({}));
+      const linked = (body.classifications || []).filter(
+        c => (c.tags || []).some(link => link.tag_id === tagId));
+
+      if (!linked.length) {
+        $("assign-empty").hidden = false;
+        return;
+      }
+      $("assign-fields").hidden = false;
+      $("assign-classifier").innerHTML = linked.map(c =>
+        `<option value="${esc(c.id)}">${esc(c.name)}</option>`).join("");
+      $("assign-classifier")._classifications = linked;
+      onClassifierChange();
+    }
+
+    function onClassifierChange() {
+      const select = $("assign-classifier");
+      const c = (select._classifications || []).find(x => x.id === select.value);
+      if (!c) return;
+      if (!c.configured) {
+        $("assign-option-label").textContent = "Value";
+        $("assign-option").innerHTML = "";
+        $("assign-type").textContent =
+          `'${c.name}' is not configured yet - set its type and classes on the Classifications tab.`;
+        $("assign-note").hidden = true;
+        $("assign-save").disabled = true;
+        return;
+      }
+      $("assign-type").textContent = `Type: ${TYPE_LABEL[c.classification_type] || c.classification_type}`;
+      $("assign-option-label").textContent =
+        c.classification_type === "sub_label" ? "Sub label" : "Attribute value";
+      $("assign-option").innerHTML = c.classes.map(cls =>
+        `<option value="${esc(cls)}">${esc(cls)}</option>`).join("");
+      $("assign-note").hidden = c.classification_type !== "sub_label";
+      $("assign-note").textContent =
+        "A tracked object can only have one sub label - if this snapshot is later " +
+        "reclassified under the same classification, the new value replaces this one.";
+      $("assign-save").disabled = false;
+    }
+
+    async function saveAssign() {
+      const classificationId = $("assign-classifier").value;
+      const label = $("assign-option").value;
+      if (!classificationId || !label) return;
+      $("assign-save").disabled = true;
+      const res = await fetch(
+        `${BASE}/api/tags/${encodeURIComponent(assignTagId)}/snapshots/` +
+        `${encodeURIComponent(assignFilename)}/classify`, {
+          method: "POST", headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({classification_id: classificationId, label}),
+        });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("assign-err").textContent = body.error || "Could not assign that classification";
+        $("assign-err").hidden = false;
+        $("assign-save").disabled = false;
+        return;
+      }
+      $("assign-modal").close();
+    }
+
+    // Same background-image maths as the tag detail page's View
+    // classifications modal - kept in step deliberately, see that page for
+    // the derivation.
+    function cropStyle(crop, imageUrl) {
+      const [x1, y1, x2, y2] = crop;
+      const w = x2 - x1, h = y2 - y1;
+      const bgW = w > 0.0001 ? 100 / w : 100;
+      const bgH = h > 0.0001 ? 100 / h : 100;
+      const posX = (1 - w) > 0.0001 ? (100 * x1) / (1 - w) : 0;
+      const posY = (1 - h) > 0.0001 ? (100 * y1) / (1 - h) : 0;
+      return `background-image:url('${imageUrl}');background-size:${bgW}% ${bgH}%;` +
+             `background-position:${posX}% ${posY}%;`;
+    }
+
+    let resultsTagId = null, resultsFilename = null;
+
+    async function openResultsModal(tagId, filename) {
+      resultsTagId = tagId; resultsFilename = filename;
+      $("results-modal").showModal();
+      await refreshResults();
+    }
+
+    async function refreshResults() {
+      const res = await fetch(`${BASE}/api/tags/${encodeURIComponent(resultsTagId)}/snapshots/` +
+        `${encodeURIComponent(resultsFilename)}/results`);
+      const body = await res.json().catch(() => ({}));
+      const linked = body.linked || [];
+      const results = body.results || {};
+
+      $("results-empty").hidden = linked.length > 0;
+      $("results-rerun").hidden = linked.length === 0;
+      if (!linked.length) { $("results-list").innerHTML = ""; return; }
+
+      const imageUrl = `${BASE}/snapshot/${encodeURIComponent(resultsTagId)}/${encodeURIComponent(resultsFilename)}`;
+      $("results-list").innerHTML = linked.map(l => {
+        const thumbStyle = cropStyle(l.crop, imageUrl);
+        const r = results[l.id];
+        if (!r) {
+          return `<div class="result-row">
+            <div class="result-thumb" style="${thumbStyle}"></div>
+            <div class="result-info">
+              <div class="name">${esc(l.name)}</div>
+              <div class="not-run">Not classified yet - use Rerun classifiers.</div>
+            </div>
+          </div>`;
+        }
+        const pass = r.score >= r.threshold;
+        const when = r.ran_at ? new Date(r.ran_at * 1000).toLocaleString() : "";
+        return `<div class="result-row">
+          <div class="result-thumb" style="${thumbStyle}"></div>
+          <div class="result-info">
+            <div class="name">${esc(l.name)}</div>
+            <div class="verdict ${pass ? "pass" : "fail"}">${esc(r.label)} &middot;
+              ${Math.round(r.score * 100)}%</div>
+            <div class="when">${esc(when)}</div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    async function rerunClassifiers(tagId, filename) {
+      const res = await fetch(`${BASE}/api/tags/${encodeURIComponent(tagId)}/snapshots/` +
+        `${encodeURIComponent(filename)}/rerun`, {method: "POST"});
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(body.error || "Could not rerun classifiers"); return; }
+      await openResultsModal(tagId, filename);
+    }
+
     document.addEventListener("click", async e => {
       const t = e.target;
       if (t.id === "new") {
@@ -324,7 +547,36 @@
         await fetch(`${BASE}/api/tags/${t.dataset.del}`, {method: "DELETE"});
         load();
       }
+      else if (t.dataset.menu !== undefined) {
+        const menu = t.nextElementSibling;
+        const willOpen = menu.hidden;
+        closeMenus();
+        menu.hidden = !willOpen;
+        return;
+      }
+      else if (t.dataset.assign !== undefined) {
+        closeMenus();
+        openAssignModal(t.dataset.tag, t.dataset.assign);
+        return;
+      }
+      else if (t.dataset.rerun !== undefined) {
+        closeMenus();
+        rerunClassifiers(t.dataset.tag, t.dataset.rerun);
+        return;
+      }
+      else if (t.dataset.viewResults !== undefined) {
+        closeMenus();
+        openResultsModal(t.dataset.tag, t.dataset.viewResults);
+        return;
+      }
+      else if (t.id === "assign-cancel") $("assign-modal").close();
+      else if (t.id === "assign-save") saveAssign();
+      else if (t.id === "results-close") $("results-modal").close();
+      else if (t.id === "results-rerun") rerunClassifiers(resultsTagId, resultsFilename);
+      if (!t.closest(".dots-anchor")) closeMenus();
     });
+
+    $("assign-classifier").addEventListener("change", onClassifierChange);
 
     load();
   </script>

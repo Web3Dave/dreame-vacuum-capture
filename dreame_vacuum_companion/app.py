@@ -464,8 +464,9 @@ def capture():
 
 
 def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
-    """Run every enabled, trained classification linked to this tag and
-    broadcast the result over MQTT.
+    """Run every enabled, trained classification linked to this tag, record
+    what each one made of the snapshot, and broadcast qualifying results over
+    MQTT.
 
     Backgrounded rather than run inline: the vacuum's integration is waiting
     on this request, and while TFLite inference itself is fast, an MQTT
@@ -477,6 +478,7 @@ def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
     def run():
         try:
             import classify_infer
+            import classify_store
             import config_store
             import mqtt_publish
 
@@ -490,6 +492,14 @@ def _classify_snapshot_async(tag: str, snapshot_path: str) -> None:
                 if result is None:
                     continue
                 label, score = result
+                # Recorded regardless of threshold - View classifications on
+                # the tag detail page is exactly where a below-threshold
+                # result (shown there in red) is supposed to be visible, not
+                # somewhere that quietly never learns it happened.
+                classify_store.save_result(
+                    tag, os.path.basename(snapshot_path), classifier["id"], classifier["name"],
+                    label, score, classifier["threshold"],
+                )
                 if score < classifier["threshold"]:
                     continue
                 mqtt_publish.publish_result(

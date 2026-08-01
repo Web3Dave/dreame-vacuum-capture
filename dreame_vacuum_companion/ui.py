@@ -25,9 +25,11 @@ import ha_client
 import yaml
 
 import classify_download
+import classify_infer
 import classify_store
 import classify_train
 import config_store
+import mqtt_publish
 import steps as step_schema
 import store
 
@@ -745,6 +747,74 @@ def api_classify_snapshot(tag_id, filename):
     except classify_store.AssignError as err:
         return jsonify({"error": str(err)}), 400
     return jsonify({"assigned": result})
+
+
+@app.route("/api/tags/<tag_id>/snapshots/<filename>/rerun", methods=["POST"])
+def api_rerun_classifiers(tag_id, filename):
+    """Run every classifier linked to this tag against this one snapshot -
+    the 'Rerun classifiers' action.
+
+    Runs regardless of a classifier's `enabled` flag: enabled governs the
+    automatic behaviour at capture time (and whether MQTT gets a message),
+    not whether a person is allowed to see what a classifier currently makes
+    of a photo. MQTT still only hears about it when the classifier is
+    enabled - a disabled classifier's Home Assistant entity should not move
+    just because someone tested it from this page. A classifier with no
+    trained model yet is skipped, not reported as an error - "nothing to
+    show" is what View classifications is for.
+    """
+    safe_tag = _safe_tag(tag_id)
+    safe_file = os.path.basename(filename)
+    if not safe_file.lower().endswith(".jpg"):
+        return jsonify({"error": "Not a snapshot filename"}), 400
+    snapshot_path = os.path.join(SNAPSHOT_ROOT, safe_tag, safe_file)
+    if not os.path.exists(snapshot_path):
+        return jsonify({"error": "That snapshot no longer exists"}), 404
+
+    ran = []
+    for classifier in config_store.list_classifiers():
+        if not classifier["configured"]:
+            continue
+        link = next((t for t in classifier["tags"] if t["tag_id"] == safe_tag), None)
+        if not link:
+            continue
+        result = classify_infer.classify(classifier["id"], snapshot_path, link["crop"])
+        if result is None:
+            continue
+        label, score = result
+        classify_store.save_result(
+            safe_tag, safe_file, classifier["id"], classifier["name"],
+            label, score, classifier["threshold"],
+        )
+        ran.append({"classifier_id": classifier["id"], "name": classifier["name"],
+                    "label": label, "score": score, "threshold": classifier["threshold"]})
+        if classifier["enabled"] and score >= classifier["threshold"]:
+            mqtt_publish.publish_result(
+                classifier["id"], classifier["name"], classifier["classification_type"],
+                label, score, tag_id=safe_tag, filename=safe_file,
+            )
+    return jsonify({"ran": ran})
+
+
+@app.route("/api/tags/<tag_id>/snapshots/<filename>/results")
+def api_snapshot_results(tag_id, filename):
+    """Every classifier's latest read on this snapshot, plus which
+    classifiers are linked to the tag at all - so View classifications can
+    show "not run yet" for one that has never classified this photo, rather
+    than silently omitting it."""
+    safe_tag = _safe_tag(tag_id)
+    safe_file = os.path.basename(filename)
+    linked = []
+    for c in config_store.list_classifiers():
+        link = next((t for t in c["tags"] if t["tag_id"] == safe_tag), None)
+        if link:
+            linked.append({"id": c["id"], "name": c["name"],
+                           "classification_type": c["classification_type"],
+                           "crop": link["crop"]})
+    return jsonify({
+        "linked": linked,
+        "results": classify_store.get_results(safe_tag, safe_file),
+    })
 
 
 @app.route("/api/tags/<tag_id>", methods=["PATCH"])

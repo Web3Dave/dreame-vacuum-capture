@@ -47,6 +47,19 @@
 
     .sentinel { height:1px; }
     .loading-more { text-align:center; color:var(--muted); font-size:13px; padding:18px 0; }
+
+    #results-modal { width:min(560px,94vw); }
+    .result-list { display:flex; flex-direction:column; gap:12px; }
+    .result-row { display:flex; gap:12px; align-items:center; }
+    .result-thumb { flex:none; width:72px; height:72px; border-radius:8px;
+                    background-color:rgba(127,127,127,.15); background-repeat:no-repeat; }
+    .result-info { min-width:0; flex:1; }
+    .result-info .name { font-size:13.5px; font-weight:600; }
+    .result-info .verdict { font-size:15px; font-variant-numeric:tabular-nums; margin-top:2px; }
+    .result-info .verdict.pass { color:var(--ok); }
+    .result-info .verdict.fail { color:var(--bad); }
+    .result-info .when { font-size:12px; color:var(--muted); margin-top:2px; }
+    .result-info .not-run { font-size:13px; color:var(--muted); }
     nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
     nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
             border-bottom:2px solid transparent; margin-bottom:-1px; }
@@ -161,6 +174,19 @@
     </div>
   </dialog>
 
+  <dialog id="results-modal">
+    <div class="dlg-head"><strong style="flex:1">Classifications</strong></div>
+    <div class="dlg-body">
+      <div id="results-empty" class="hint" hidden>No classifications are linked to this tag yet -
+        link one from the <a href="{{ base }}/classifications">Classifications</a> tab first.</div>
+      <div id="results-list" class="result-list"></div>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="results-close">Close</button>
+      <button type="button" class="primary" id="results-rerun">Rerun classifiers</button>
+    </div>
+  </dialog>
+
   <script>
     const BASE = "{{ base }}";
     const TAG_ID = "{{ tag.id }}";
@@ -181,6 +207,8 @@
             <button type="button" class="dots" data-menu="${esc(s.filename)}" aria-label="Options">&#8942;</button>
             <div class="menu" hidden>
               <button type="button" data-assign="${esc(s.filename)}">Assign classification</button>
+              <button type="button" data-rerun="${esc(s.filename)}">Rerun classifiers</button>
+              <button type="button" data-view-results="${esc(s.filename)}">View classifications</button>
             </div>
           </div>
           <figcaption><span class="when">${new Date(s.taken_at * 1000).toLocaleString()}</span></figcaption>
@@ -313,6 +341,84 @@
       $("assign-modal").close();
     }
 
+    // ---- rerun / view classifications -------------------------------------
+    let resultsFilename = null;
+
+    /**
+     * Inline styles that make a background-image of the full snapshot show
+     * only the crop a classifier actually looks at, at its real aspect.
+     *
+     * The maths: scaling the image up by 1/w (so the crop's width fills the
+     * container) and shifting it so the crop's top-left lands on the
+     * container's top-left. background-position's own percentage meaning -
+     * offset = (container - image) * percent - is solved for percent here
+     * rather than guessed at, which is what keeps this in exact agreement
+     * with pixelToWorld/worldToPixel's own "derive it, do not eyeball it"
+     * rule elsewhere in this app.
+     */
+    function cropStyle(crop, imageUrl) {
+      const [x1, y1, x2, y2] = crop;
+      const w = x2 - x1, h = y2 - y1;
+      const bgW = w > 0.0001 ? 100 / w : 100;
+      const bgH = h > 0.0001 ? 100 / h : 100;
+      const posX = (1 - w) > 0.0001 ? (100 * x1) / (1 - w) : 0;
+      const posY = (1 - h) > 0.0001 ? (100 * y1) / (1 - h) : 0;
+      return `background-image:url('${imageUrl}');background-size:${bgW}% ${bgH}%;` +
+             `background-position:${posX}% ${posY}%;`;
+    }
+
+    async function openResultsModal(filename) {
+      resultsFilename = filename;
+      $("results-modal").showModal();
+      await refreshResults();
+    }
+
+    async function refreshResults() {
+      const res = await fetch(`${BASE}/api/tags/${encodeURIComponent(TAG_ID)}/snapshots/` +
+        `${encodeURIComponent(resultsFilename)}/results`);
+      const body = await res.json().catch(() => ({}));
+      const linked = body.linked || [];
+      const results = body.results || {};
+
+      $("results-empty").hidden = linked.length > 0;
+      $("results-rerun").hidden = linked.length === 0;
+      if (!linked.length) { $("results-list").innerHTML = ""; return; }
+
+      const imageUrl = `${BASE}/snapshot/${encodeURIComponent(TAG_ID)}/${encodeURIComponent(resultsFilename)}`;
+      $("results-list").innerHTML = linked.map(l => {
+        const thumbStyle = cropStyle(l.crop, imageUrl);
+        const r = results[l.id];
+        if (!r) {
+          return `<div class="result-row">
+            <div class="result-thumb" style="${thumbStyle}"></div>
+            <div class="result-info">
+              <div class="name">${esc(l.name)}</div>
+              <div class="not-run">Not classified yet - use Rerun classifiers.</div>
+            </div>
+          </div>`;
+        }
+        const pass = r.score >= r.threshold;
+        const when = r.ran_at ? new Date(r.ran_at * 1000).toLocaleString() : "";
+        return `<div class="result-row">
+          <div class="result-thumb" style="${thumbStyle}"></div>
+          <div class="result-info">
+            <div class="name">${esc(l.name)}</div>
+            <div class="verdict ${pass ? "pass" : "fail"}">${esc(r.label)} &middot;
+              ${Math.round(r.score * 100)}%</div>
+            <div class="when">${esc(when)}</div>
+          </div>
+        </div>`;
+      }).join("");
+    }
+
+    async function rerunClassifiers(filename) {
+      const res = await fetch(`${BASE}/api/tags/${encodeURIComponent(TAG_ID)}/snapshots/` +
+        `${encodeURIComponent(filename)}/rerun`, {method: "POST"});
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) { alert(body.error || "Could not rerun classifiers"); return; }
+      await openResultsModal(filename);
+    }
+
     document.addEventListener("click", e => {
       const t = e.target;
       if (t.dataset.menu !== undefined) {
@@ -327,8 +433,20 @@
         openAssignModal(t.dataset.assign);
         return;
       }
+      if (t.dataset.rerun !== undefined) {
+        closeMenus();
+        rerunClassifiers(t.dataset.rerun);
+        return;
+      }
+      if (t.dataset.viewResults !== undefined) {
+        closeMenus();
+        openResultsModal(t.dataset.viewResults);
+        return;
+      }
       if (t.id === "assign-cancel") $("assign-modal").close();
       else if (t.id === "assign-save") saveAssign();
+      else if (t.id === "results-close") $("results-modal").close();
+      else if (t.id === "results-rerun") rerunClassifiers(resultsFilename);
       if (!t.closest(".dots-anchor")) closeMenus();
     });
 

@@ -13,8 +13,10 @@ what it shows. That action is `assign_label`.
 """
 from __future__ import annotations
 
+import json
 import logging
 import os
+import threading
 import time
 
 from PIL import Image
@@ -22,6 +24,18 @@ from PIL import Image
 import config_store
 
 DATASET_ROOT = "/media/dreame-capture/classify"
+# Every classifier's latest read on a given snapshot, keyed by tag then
+# filename - one small file per snapshot rather than one per (classifier,
+# snapshot), since "what did every linked classifier make of this photo" is
+# how results are actually looked at (the tag detail page's View
+# classifications modal), not one classifier at a time.
+RESULTS_ROOT = "/media/dreame-capture/classify/results"
+
+# Guards the read-modify-write below: several classifiers can finish
+# classifying the same snapshot within milliseconds of each other (a rerun
+# loops over every linked classifier), and without this the second write to
+# land could stomp the first rather than merge with it.
+_results_lock = threading.Lock()
 
 # The size Frigate trains and infers MobileNetV2 at. Matched exactly: a
 # dataset image saved at a different size would need resizing again at train
@@ -144,3 +158,49 @@ def assign_label(classifier_id: str, tag_id: str, snapshot_path: str, label: str
         "classifier_id": classifier_id, "label": label,
         "filename": os.path.basename(dest), "assigned_at": int(time.time()),
     }
+
+
+# -- results ----------------------------------------------------------------
+def _results_path(tag_id: str, filename: str) -> str:
+    stem = os.path.splitext(os.path.basename(filename))[0]
+    return os.path.join(RESULTS_ROOT, safe_component(tag_id), f"{stem}.json")
+
+
+def save_result(tag_id: str, filename: str, classifier_id: str, name: str,
+                label: str, score: float, threshold: float) -> None:
+    """Record one classifier's read on one snapshot, merging with whatever
+    other classifiers have already recorded for it.
+
+    Called from two different processes (app.py after a live capture,
+    ui.py's rerun route) with no shared memory between them, so the merge
+    has to happen against the file on disk each time, not an in-memory
+    cache - unlike config_store, there is no cache here to keep coherent.
+    """
+    path = _results_path(tag_id, filename)
+    with _results_lock:
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        current = {}
+        if os.path.exists(path):
+            try:
+                with open(path) as handle:
+                    current = json.load(handle)
+            except (OSError, ValueError):
+                current = {}
+        current[classifier_id] = {
+            "name": name, "label": label, "score": score,
+            "threshold": threshold, "ran_at": int(time.time()),
+        }
+        temp = f"{path}.tmp"
+        with open(temp, "w") as handle:
+            json.dump(current, handle)
+        os.replace(temp, path)
+
+
+def get_results(tag_id: str, filename: str) -> dict:
+    """{classifier_id: {name, label, score, threshold, ran_at}}, or {} if
+    nothing has ever classified this snapshot."""
+    try:
+        with open(_results_path(tag_id, filename)) as handle:
+            return json.load(handle)
+    except (OSError, ValueError):
+        return {}
