@@ -532,6 +532,27 @@ def _path_inbound_bytes(did):
         return None
 
 
+def _path_reader_count(did):
+    """How many RTSP clients are currently reading this path, or None if that
+    could not be determined.
+
+    None is deliberately not treated as "zero" by the caller: if MediaMTX's
+    API is briefly unreachable, that must not look identical to "nobody is
+    watching" and auto-stop a stream someone actually has open.
+    """
+    try:
+        resp = requests.get(f"{MEDIAMTX_API}/v3/paths/list", timeout=3)
+        if resp.status_code != 200:
+            return None
+        for item in resp.json().get("items") or []:
+            if item.get("name") == did:
+                readers = item.get("readers")
+                return len(readers) if isinstance(readers, list) else None
+        return None
+    except (requests.RequestException, ValueError):
+        return None
+
+
 def _kill(proc):
     if proc.poll() is None:
         proc.kill()
@@ -591,10 +612,16 @@ def _keep_alive_loop(did):
                 )
                 result = (resp or {}).get("data", {}).get("result", {}) or {}
                 out = result.get("out") or [{}]
-                app.logger.warning(
-                    "camera keep_alive for %s -> code=%s value=%s",
-                    did, result.get("code"), out[0].get("value"),
-                )
+                code = result.get("code")
+                # Fires every 20s for as long as a stream is open - a routine
+                # "yes, still here" is not a warning. Only a non-zero code,
+                # which the device answers with when it has stopped listening
+                # to this session, is worth a log line at all.
+                if code != 0:
+                    app.logger.warning(
+                        "camera keep_alive for %s -> code=%s value=%s",
+                        did, code, out[0].get("value"),
+                    )
             except Exception:
                 app.logger.warning("camera keep_alive failed for %s", did, exc_info=True)
 
@@ -632,12 +659,25 @@ def _ffmpeg_watchdog(did, creds):
 
         timeout_minutes = _stream_timeout_minutes()
         if timeout_minutes is not None and time.time() - started_at > timeout_minutes * 60:
+            # A live view left open (a dashboard card, HA's own camera
+            # stream) keeps at least one RTSP reader attached for as long as
+            # it is actually being watched. Killing the path under it left
+            # Home Assistant with no way to tell "deliberately stopped" from
+            # "network fault" - it just retried forever with growing backoff,
+            # which is what this timer was supposed to prevent, not cause.
+            # None (API unreachable) is treated as "someone might still be
+            # watching", the same caution _wait_for_path_ready already uses -
+            # a stop that should not have happened is worse than one delayed
+            # a few seconds until the next check.
+            readers = _path_reader_count(did)
+            if readers != 0:
+                continue
             with _streams_lock:
                 _active_streams.pop(did, None)
             _kill(ffmpeg_proc)
             _kill(p2p_proc)
             _safe_disconnect(protocol)
-            app.logger.warning("Stream for %s auto-stopped after %s minutes (stream_timeout_minutes)", did, timeout_minutes)
+            app.logger.warning("Stream for %s auto-stopped after %s minutes with nobody watching (stream_timeout_minutes)", did, timeout_minutes)
             return
 
         now = time.time()
