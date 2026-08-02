@@ -473,8 +473,12 @@ def capture():
 
 
 def _classify_snapshot(tag: str, snapshot_path: str) -> list:
-    """Run every enabled, trained classification linked to this tag and
-    record what each one made of the snapshot.
+    """Report what happened for every classification linked to this tag -
+    not just the ones that produced a usable result. The caller (the
+    dreame_vacuum_core integration) logs this to the task's activity trace,
+    so "nothing happened" has to be distinguishable from "ran and scored
+    below threshold" and from "no trained model yet", rather than all three
+    silently looking identical.
 
     Run inline rather than backgrounded: TFLite inference is local and fast,
     and the caller needs the results to include in its own response. Nothing
@@ -482,20 +486,26 @@ def _classify_snapshot(tag: str, snapshot_path: str) -> list:
     assigns a label by hand, so an uncertain guess can never quietly teach
     the model to repeat itself.
     """
-    results = []
+    reports = []
     try:
         import classify_infer
         import classify_store
         import config_store
 
         for classifier in config_store.list_classifiers():
-            if not (classifier["enabled"] and classifier["configured"]):
-                continue
             link = next((t for t in classifier["tags"] if t["tag_id"] == tag), None)
             if not link:
+                continue  # not linked to this tag at all - not this classifier's business
+            base = {"classifier_id": classifier["id"], "name": classifier["name"]}
+            if not classifier["configured"]:
+                reports.append({**base, "skipped": "not configured yet"})
+                continue
+            if not classifier["enabled"]:
+                reports.append({**base, "skipped": "disabled"})
                 continue
             result = classify_infer.classify(classifier["id"], snapshot_path, link["crop"])
             if result is None:
+                reports.append({**base, "skipped": "no trained model yet"})
                 continue
             label, score = result
             # Recorded regardless of threshold - View classifications on the
@@ -506,15 +516,14 @@ def _classify_snapshot(tag: str, snapshot_path: str) -> list:
                 tag, os.path.basename(snapshot_path), classifier["id"], classifier["name"],
                 label, score, classifier["threshold"],
             )
-            if score < classifier["threshold"]:
-                continue
-            results.append({
-                "classifier_id": classifier["id"],
-                "name": classifier["name"],
+            reports.append({
+                **base,
                 "classification_type": classifier["classification_type"],
                 "classes": classifier["classes"],
                 "label": label,
                 "score": score,
+                "threshold": classifier["threshold"],
+                "passed_threshold": score >= classifier["threshold"],
                 "tag_id": tag,
                 "filename": os.path.basename(snapshot_path),
                 "ran_at": int(time.time()),
@@ -523,7 +532,8 @@ def _classify_snapshot(tag: str, snapshot_path: str) -> list:
         app.logger.warning(
             "Classification failed for tag %s (snapshot capture already succeeded)",
             tag, exc_info=True)
-    return results
+        reports.append({"error": "Classification crashed - see the add-on's own log"})
+    return reports
 
 
 def _spawn_ffmpeg_republish(live_url, rtsp_url):

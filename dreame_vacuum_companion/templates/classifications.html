@@ -70,16 +70,23 @@
     .configure-prompt { background:rgba(255,152,0,.10); border:1px solid rgba(255,152,0,.35);
                         border-radius:8px; padding:10px 12px; font-size:13px; margin-top:10px; }
     .configure-form { display:grid; gap:10px; max-width:480px; margin-top:10px; }
-    .configure-form .row2 { display:grid; grid-template-columns:1fr 1fr; gap:10px; }
     .configure-form label span { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-    .configure-form .tg { display:flex; align-items:center; gap:8px; font-size:13.5px; }
-    .configure-form .tg input { width:auto; }
     .configure-actions { display:flex; gap:8px; }
     .summary { display:flex; flex-wrap:wrap; gap:8px; align-items:center; margin-top:10px; font-size:13px; }
     .summary .type-badge { border:1px solid var(--line); border-radius:999px; padding:3px 11px;
                            color:var(--muted); text-transform:capitalize; }
     .summary .type-badge.on { color:var(--ok); border-color:var(--ok); }
-    .summary .off { color:var(--bad); }
+    /* HA-app-style pill toggle, not a checkbox - flips a classifier's
+       enabled state right from the summary row, no need to open Edit. */
+    .switch { position:relative; display:inline-block; width:38px; height:22px; flex:none; }
+    .switch input { position:absolute; opacity:0; width:100%; height:100%; margin:0; cursor:pointer; }
+    .switch .slider { position:absolute; inset:0; background:var(--line); border-radius:999px;
+                       transition:background .15s ease; }
+    .switch .slider::before { content:""; position:absolute; width:16px; height:16px; left:3px; top:3px;
+                               background:#fff; border-radius:50%; transition:transform .15s ease; }
+    .switch input:checked + .slider { background:var(--accent); }
+    .switch input:checked + .slider::before { transform:translateX(16px); }
+    .switch input:focus-visible + .slider { outline:2px solid var(--accent); outline-offset:2px; }
     .training { border-top:1px solid var(--line); margin-top:12px; padding-top:12px; }
     .training-row { display:flex; align-items:center; gap:10px; flex-wrap:wrap; }
 
@@ -443,7 +450,10 @@
       return `
         <div class="summary">
           <span class="type-badge on">${esc(TYPE_LABEL[c.classification_type] || c.classification_type)}</span>
-          <span class="${c.enabled ? "" : "off"}">${c.enabled ? "Enabled" : "Disabled"}</span>
+          <label class="switch" title="${c.enabled ? "Enabled" : "Disabled"}">
+            <input type="checkbox" data-toggle-enabled="${esc(c.id)}"${c.enabled ? " checked" : ""}>
+            <span class="slider"></span>
+          </label>
           <span class="hint" style="margin:0">threshold ${c.threshold}</span>
           <span class="hint" style="margin:0">&middot; classes: ${c.classes.map(esc).join(", ")}</span>
           <button type="button" data-configure="${esc(c.id)}">Edit</button>
@@ -466,14 +476,9 @@
             <input data-cf-classes value="${esc((c.classes || []).join(", "))}"
                    placeholder="empty, full">
           </label>
-          <div class="row2">
-            <label><span>Threshold</span>
-              <input data-cf-threshold type="number" min="0.05" max="1" step="0.05"
-                     value="${c.threshold ?? 0.8}"></label>
-            <label class="tg" style="align-self:end">
-              <input type="checkbox" data-cf-enabled${c.enabled ? " checked" : ""}> Enabled
-            </label>
-          </div>
+          <label><span>Threshold</span>
+            <input data-cf-threshold type="number" min="0.05" max="1" step="0.05"
+                   value="${c.threshold ?? 0.8}"></label>
           <p class="err" data-cf-err hidden></p>
           <div class="configure-actions">
             <button type="button" class="ghost" data-configure-cancel="${esc(c.id)}">Cancel</button>
@@ -631,6 +636,11 @@
     }
 
     // ---- wiring ----------------------------------------------------------
+    document.addEventListener("change", async e => {
+      const t = e.target;
+      if (t.dataset.toggleEnabled) await toggleEnabled(t.dataset.toggleEnabled, t.checked);
+    });
+
     document.addEventListener("click", async e => {
       const t = e.target;
       if (t.id === "new") {
@@ -675,11 +685,15 @@
       const form = document.querySelector(`[data-configure-form="${id}"]`);
       const classes = form.querySelector("[data-cf-classes]").value
         .split(",").map(s => s.trim()).filter(Boolean);
+      // enabled is not part of this form - it has its own always-visible
+      // toggle on the summary row (see toggleEnabled), so this preserves
+      // whatever that is currently set to rather than fighting over it.
+      const current = classifications.find(x => x.id === id);
       const body = {
         classification_type: form.querySelector("[data-cf-type]").value,
         classes,
         threshold: Number(form.querySelector("[data-cf-threshold]").value),
-        enabled: form.querySelector("[data-cf-enabled]").checked,
+        enabled: current ? current.enabled : false,
       };
       const res = await fetch(`${BASE}/api/classifications/${id}/configure`, {
         method: "PUT", headers: {"Content-Type": "application/json"},
@@ -693,6 +707,26 @@
         return;
       }
       editingConfig = null;
+      load();
+    }
+
+    async function toggleEnabled(id, enabled) {
+      const c = classifications.find(x => x.id === id);
+      if (!c) return;
+      // Full save even though only `enabled` changed: /configure is the one
+      // endpoint that writes a classifier's config, and it validates
+      // type/classes/threshold together rather than accepting a partial
+      // patch - so the rest rides along unchanged.
+      const res = await fetch(`${BASE}/api/classifications/${id}/configure`, {
+        method: "PUT", headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({
+          classification_type: c.classification_type,
+          classes: c.classes,
+          threshold: c.threshold,
+          enabled,
+        }),
+      });
+      if (!res.ok) { alert("Could not change enabled state"); }
       load();
     }
 

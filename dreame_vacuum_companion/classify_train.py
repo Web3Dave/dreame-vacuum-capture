@@ -46,7 +46,7 @@ STATUS_FILE = "status.json"
 # add-on user is far more likely than a Frigate operator to hit "I made two
 # classes and one snapshot each" by trying the feature, and a clear refusal
 # beats a model that has memorised two photos.
-MIN_IMAGES_PER_CLASS = 5
+MIN_IMAGES_PER_CLASS = 1
 
 
 def model_dir(classifier_id: str) -> str:
