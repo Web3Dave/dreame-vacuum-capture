@@ -63,7 +63,7 @@ def get_state(entity_id: str) -> dict | None:
 def get_api(path: str, timeout: int = 15) -> dict | None:
     """Anything else under Home Assistant's own /api/ namespace.
 
-    For the integration's own custom views (e.g. /dreame_vacuum_core/maps/
+    For the integration's own custom views (e.g. /dreame_vacuum_unlocked_integration/maps/
     <did>) - the Dreame cloud client and login session live in the
     integration, not here, so this add-on asks Home Assistant for
     already-decoded data rather than duplicating that client. `path` is
@@ -126,7 +126,7 @@ def call_service_result(
         return False, str(err)
 
 
-def discover_by_platform(platform: str = "dreame_vacuum_core") -> list[dict]:
+def discover_by_platform(platform: str = "dreame_vacuum_unlocked_integration") -> list[dict]:
     """Fallback device discovery via the entity registry (WebSocket only).
 
     Used when the integration hasn't registered with us - e.g. the add-on was

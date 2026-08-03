@@ -1,12 +1,12 @@
-name: Dreame Vacuum Companion
+name: Dreame Vacuum Unlocked
 description: >-
-  Companion backend for the Dreame Vacuum Core integration. Pulls snapshots
+  Companion backend for the Dreame Vacuum Unlocked Integration. Pulls snapshots
   and RTSP streams from the vacuum's onboard camera via Tencent's XP2P SDK,
-  and hosts the control panel UI. Install the dreame_vacuum_core integration
+  and hosts the control panel UI. Install the dreame_vacuum_unlocked_integration integration
   alongside it - that owns the vacuum entities and drives this add-on's API.
-version: "3.33.0"
-slug: dreame_vacuum_companion
-url: https://github.com/Web3Dave/dreame-vacuum-companion
+version: "3.34.0"
+slug: dreame_vacuum_unlocked
+url: https://github.com/Web3Dave/dreame-vacuum-unlocked
 init: false
 arch:
   - amd64
@@ -30,7 +30,7 @@ ports:
   8099/tcp: 8099
   8554/tcp: 8554
 ports_description:
-  8099/tcp: HTTP API (called by the dreame_vacuum_core integration)
+  8099/tcp: HTTP API (called by the dreame_vacuum_unlocked_integration integration)
   8554/tcp: RTSP (one path per device, e.g. rtsp://<host>:8554/<did>)
 
 options:

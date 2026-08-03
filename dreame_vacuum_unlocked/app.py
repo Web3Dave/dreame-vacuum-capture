@@ -461,7 +461,7 @@ def capture():
         # path needs - callers should not have to strip a prefix themselves.
         "media_path": os.path.relpath(snapshot_path, MEDIA_ROOT),
         "latest_media_path": os.path.relpath(latest_path, MEDIA_ROOT),
-        # The dreame_vacuum_core integration is always the one that asked for
+        # The dreame_vacuum_unlocked_integration integration is always the one that asked for
         # this snapshot - even a task run from this add-on's own UI still
         # takes the photo via the `vacuum.take_snapshot` Home Assistant
         # service, which the integration alone can fulfil. So riding the
@@ -475,7 +475,7 @@ def capture():
 def _classify_snapshot(tag: str, snapshot_path: str) -> list:
     """Report what happened for every classification linked to this tag -
     not just the ones that produced a usable result. The caller (the
-    dreame_vacuum_core integration) logs this to the task's activity trace,
+    dreame_vacuum_unlocked_integration integration) logs this to the task's activity trace,
     so "nothing happened" has to be distinguishable from "ran and scored
     below threshold" and from "no trained model yet", rather than all three
     silently looking identical.
@@ -872,7 +872,7 @@ def latest():
 
 @app.route("/register", methods=["POST"])
 def register():
-    """Device registration pushed by the dreame_vacuum_core integration.
+    """Device registration pushed by the dreame_vacuum_unlocked_integration integration.
 
     The integration is authoritative about which devices belong to it, so the
     companion UI never has to infer ownership from an entity-registry dump.

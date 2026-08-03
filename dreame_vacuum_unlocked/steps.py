@@ -41,7 +41,7 @@ STEP_TYPES = {
             ("arrival_tolerance", "int", False, 150, "How close counts as arrived, in mm"),
             ("timeout", "float", False, 180, "Give up after this many seconds"),
         ],
-        "service": ("dreame_vacuum_core", "go_to_point"),
+        "service": ("dreame_vacuum_unlocked_integration", "go_to_point"),
     },
     "rotate_to_heading": {
         "label": "Rotate to heading",
@@ -51,7 +51,7 @@ STEP_TYPES = {
             ("tolerance", "float", False, 5, "How close counts as facing it, in degrees"),
             ("max_attempts", "int", False, 8, "Give up after this many corrections"),
         ],
-        "service": ("dreame_vacuum_core", "rotate_to_heading"),
+        "service": ("dreame_vacuum_unlocked_integration", "rotate_to_heading"),
     },
     "take_snapshot": {
         "label": "Take snapshot",
@@ -59,7 +59,7 @@ STEP_TYPES = {
         "fields": [
             ("tag", "str", False, "general", "Groups snapshots, e.g. poop_check"),
         ],
-        "service": ("dreame_vacuum_core", "take_snapshot"),
+        "service": ("dreame_vacuum_unlocked_integration", "take_snapshot"),
     },
     "return_to_dock": {
         "label": "Return to dock",

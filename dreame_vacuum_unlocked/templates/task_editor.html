@@ -337,7 +337,7 @@
     // ---- map -------------------------------------------------------------
     async function mapModule() {
       if (!mapApi) {
-        mapApi = await import(`/dreame_vacuum_core/map.js?v=${ADDON_VERSION}`);
+        mapApi = await import(`/dreame_vacuum_unlocked_integration/map.js?v=${ADDON_VERSION}`);
         if (mapApi.loadSprites) await mapApi.loadSprites();
       }
       return mapApi;

@@ -1,6 +1,6 @@
-# Dreame Vacuum Companion — Home Assistant Add-on
+# Dreame Vacuum Unlocked — Home Assistant Add-on
 
-Companion backend for the **Dreame Vacuum Core** integration
+Companion backend for the **Dreame Vacuum Unlocked Integration** integration
 ([dreame-vacuum-core](https://github.com/Web3Dave/dreame-vacuum-core)).
 It also hosts the control-panel UI, served in the Home Assistant sidebar via Ingress.
 It talks to Dreame's cloud API and Tencent's XP2P SDK to pull snapshots and RTSP
@@ -70,7 +70,7 @@ add-on's configured `api_token`.
    and choose **Repositories**.
 3. Paste this repository URL and click **Add**:
    ```
-   https://github.com/Web3Dave/dreame-vacuum-companion
+   https://github.com/Web3Dave/dreame-vacuum-unlocked
    ```
 4. Refresh the page, install **Dreame Vacuum Camera Capture**.
 5. On the **Configuration** tab, set `api_token` to any random string (e.g.
@@ -86,21 +86,21 @@ add-on's configured `api_token`.
 
 ## Files
 
-- `dreame_vacuum_companion/config.yaml` — add-on manifest (`api_token`/`stream_timeout_minutes`
+- `dreame_vacuum_unlocked/config.yaml` — add-on manifest (`api_token`/`stream_timeout_minutes`
   options, HTTP + RTSP ports, media mount)
-- `dreame_vacuum_companion/Dockerfile` — multi-stage build (Ubuntu 20.04 builder, matching the
+- `dreame_vacuum_unlocked/Dockerfile` — multi-stage build (Ubuntu 20.04 builder, matching the
   toolchain Tencent's vendored static libraries were built with — a newer GCC will
   fail to link them) plus a bundled MediaMTX RTSP server
-- `dreame_vacuum_companion/run.sh` — starts MediaMTX in the background, then the HTTP API in
+- `dreame_vacuum_unlocked/run.sh` — starts MediaMTX in the background, then the HTTP API in
   the foreground
-- `dreame_vacuum_companion/mediamtx.yml` — minimal MediaMTX config (RTSP only, dynamic paths)
-- `dreame_vacuum_companion/app.py` — the HTTP API described above
-- `dreame_vacuum_companion/dreame_sign.py` — the reverse-engineered Dreame request-signing
+- `dreame_vacuum_unlocked/mediamtx.yml` — minimal MediaMTX config (RTSP only, dynamic paths)
+- `dreame_vacuum_unlocked/app.py` — the HTTP API described above
+- `dreame_vacuum_unlocked/dreame_sign.py` — the reverse-engineered Dreame request-signing
   algorithm
-- `dreame_vacuum_companion/dreame_lib/` — a trimmed-down copy of the Dreame Home Assistant
+- `dreame_vacuum_unlocked/dreame_lib/` — a trimmed-down copy of the Dreame Home Assistant
   integration's cloud-protocol client (login, device discovery, signed API calls) —
   just the network layer
-- `dreame_vacuum_companion/pc_client/` — Tencent's real, publicly-published XP2P SDK static
+- `dreame_vacuum_unlocked/pc_client/` — Tencent's real, publicly-published XP2P SDK static
   libraries (`tencentyun/iot-p2p-build` on GitHub) plus a small C wrapper
   (`p2p_sample.c`) from Tencent's own reference sample
 
@@ -157,7 +157,7 @@ add-on's configured `api_token`.
 
 | Port | Purpose | Auth |
 |---|---|---|
-| 8099 | Machine API — called by the `dreame_vacuum_core` integration | `X-Api-Token` |
+| 8099 | Machine API — called by the `dreame_vacuum_unlocked_integration` integration | `X-Api-Token` |
 | 8100 | Control panel UI | Ingress only (authenticated by Home Assistant) |
 | 8554 | RTSP, one path per device | none (loopback/LAN) |
 

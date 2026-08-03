@@ -188,7 +188,7 @@ def api_map(did):
         if entity:
             started = time.time()
             ok, detail = ha_client.call_service_result(
-                "dreame_vacuum_core", "publish_map", {"entity_id": entity}, timeout=90
+                "dreame_vacuum_unlocked_integration", "publish_map", {"entity_id": entity}, timeout=90
             )
             if not ok:
                 # Prefer the integration's own recorded reason: Home Assistant's
@@ -316,7 +316,7 @@ def api_maps_list(did):
     duplicating that client here is exactly the kind of thing that drifts
     out of sync with it. See ha_client.get_api.
     """
-    result = ha_client.get_api(f"/dreame_vacuum_core/maps/{did}")
+    result = ha_client.get_api(f"/dreame_vacuum_unlocked_integration/maps/{did}")
     if result is None:
         return jsonify({"error": "Could not reach Home Assistant, or that "
                                   "vacuum is not registered yet"}), 502
@@ -329,7 +329,7 @@ def api_maps_current(did):
     the same endpoint the Lovelace card itself calls, so rendering can
     never drift between the two."""
     refresh = request.args.get("refresh") in ("1", "true", "yes")
-    path = f"/dreame_vacuum_core/map/{did}" + ("?refresh=1" if refresh else "")
+    path = f"/dreame_vacuum_unlocked_integration/map/{did}" + ("?refresh=1" if refresh else "")
     result = ha_client.get_api(path)
     if result is None:
         return jsonify({"error": "Could not reach Home Assistant, or no map "
@@ -622,7 +622,7 @@ def api_run_task(slug):
     # from an automation.
     started = time.time()
     ok, detail = ha_client.call_service_result(
-        "dreame_vacuum_core", "start_task", {"entity_id": vacuum, "task": slug}
+        "dreame_vacuum_unlocked_integration", "start_task", {"entity_id": vacuum, "task": slug}
     )
     if not ok:
         # Home Assistant answers any service error with a bare 500 and keeps the

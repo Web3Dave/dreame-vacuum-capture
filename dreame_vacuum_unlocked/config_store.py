@@ -49,7 +49,7 @@ CLASSIFICATION_TYPES = ("sub_label", "attribute")
 SUPPORTED_DEVICES = ("cpu",)
 
 STARTER_CONFIG = """\
-# Dreame Vacuum Companion configuration.
+# Dreame Vacuum Unlocked configuration.
 #
 # Everything here can also be edited from the UI - the two are the same data.
 # Comments you add are preserved when the UI writes to this file.
@@ -60,7 +60,7 @@ STARTER_CONFIG = """\
 tags: {}
 
 # Tasks are sequences of moves - drive somewhere, face a direction, photograph
-# it. The key is the id an automation calls with dreame_vacuum_core.start_task.
+# it. The key is the id an automation calls with dreame_vacuum_unlocked_integration.start_task.
 tasks: {}
 
 # Classifications read a state from the snapshots of the tags they are linked
