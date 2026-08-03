@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Maps - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:8px;
+              border:1px solid var(--line); background:var(--card); color:var(--text); }
+    .hint { color:var(--muted); font-size:13px; }
+    .err { color:var(--bad); font-size:13px; }
+
+    .map-tabs { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:14px; }
+    .map-tabs button { font:inherit; font-size:13.5px; padding:7px 13px; border-radius:999px;
+                        border:1px solid var(--line); background:var(--card); color:var(--text);
+                        cursor:pointer; }
+    .map-tabs button.active { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    .map-tabs .badge { opacity:.75; font-size:12px; }
+
+    .subtabs { display:flex; gap:4px; margin-bottom:14px; border-bottom:1px solid var(--line); }
+    .subtabs button { font:inherit; font-size:14px; padding:8px 14px; border:none;
+                       background:transparent; color:var(--muted); cursor:pointer;
+                       border-bottom:2px solid transparent; margin-bottom:-1px; }
+    .subtabs button.active { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
+    #map-canvas-wrap { display:flex; justify-content:center; }
+    #map-canvas-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; }
+
+    table { width:100%; border-collapse:collapse; font-size:14px; }
+    th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+    th { color:var(--muted); font-weight:500; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
+    .current-pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px;
+                    background:var(--ok); color:#fff; margin-left:6px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    <span class="sub">Maps</span>
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/tags">Tags</a>
+    <a href="{{ base }}/classifications">Classifications</a>
+    <a href="{{ base }}/maps" aria-current="page">Maps</a>
+    <a href="{{ base }}/activity">Activity</a>
+  </nav>
+
+  <div class="bar">
+    <select id="device"><option value="">Loading devices...</option></select>
+    <span id="device-hint" class="hint"></span>
+  </div>
+
+  <div id="content"></div>
+
+  <script type="module">
+    const BASE = "{{ base }}";
+    const $ = (id) => document.getElementById(id);
+
+    let devices = [];
+    let mapsData = null;   // {current_map_id, maps: [...]}
+    let selectedMapId = null;
+    let selectedSubtab = "current";   // "current" | "backups"
+    let mapModule = null;
+
+    async function loadModule() {
+      if (!mapModule) {
+        mapModule = await import("/dreame_vacuum_core/map.js");
+        await mapModule.loadSprites();
+      }
+      return mapModule;
+    }
+
+    async function loadDevices() {
+      const res = await fetch(`${BASE}/api/maps/devices`);
+      const body = await res.json().catch(() => ({}));
+      devices = body.devices || [];
+      const select = $("device");
+      if (!devices.length) {
+        select.innerHTML = `<option value="">No devices registered yet</option>`;
+        return;
+      }
+      select.innerHTML = devices.map((d) =>
+        `<option value="${esc(d.did)}">${esc(d.name || d.did)}</option>`).join("");
+      await loadMapsForDevice(select.value);
+    }
+
+    $("device").addEventListener("change", (e) => loadMapsForDevice(e.target.value));
+
+    async function loadMapsForDevice(did) {
+      mapsData = null;
+      selectedMapId = null;
+      $("device-hint").textContent = "";
+      if (!did) { render(); return; }
+      $("content").innerHTML = `<p class="hint">Loading maps...</p>`;
+      const res = await fetch(`${BASE}/api/maps/${encodeURIComponent(did)}`);
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        $("content").innerHTML = `<p class="err">${esc(body.error || "Could not load maps")}</p>`;
+        return;
+      }
+      mapsData = body;
+      selectedMapId = (body.maps[0] && body.maps[0].id) ?? null;
+      selectedSubtab = "current";
+      render();
+    }
+
+    function render() {
+      const el = $("content");
+      if (!mapsData || !mapsData.maps.length) {
+        el.innerHTML = `<p class="hint">No maps found for this device yet - the account has no backup history to list.</p>`;
+        return;
+      }
+      const tabs = mapsData.maps.map((m) => `
+        <button data-map="${m.id}" class="${m.id === selectedMapId ? "active" : ""}">
+          Map ${m.id}${m.is_current ? ` <span class="badge">&middot; current</span>` : ""}
+        </button>`).join("");
+
+      el.innerHTML = `
+        <div class="map-tabs">${tabs}</div>
+        <div class="subtabs">
+          <button data-subtab="current" class="${selectedSubtab === "current" ? "active" : ""}">Current map</button>
+          <button data-subtab="backups" class="${selectedSubtab === "backups" ? "active" : ""}">Backups</button>
+        </div>
+        <div class="card" id="subtab-body"></div>`;
+
+      el.querySelectorAll("[data-map]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedMapId = Number(btn.dataset.map);
+          render();
+        });
+      });
+      el.querySelectorAll("[data-subtab]").forEach((btn) => {
+        btn.addEventListener("click", () => {
+          selectedSubtab = btn.dataset.subtab;
+          render();
+        });
+      });
+
+      const map = mapsData.maps.find((m) => m.id === selectedMapId);
+      if (selectedSubtab === "current") renderCurrent(map);
+      else renderBackups(map);
+    }
+
+    async function renderCurrent(map) {
+      const body = $("subtab-body");
+      if (!map.is_current) {
+        body.innerHTML = `<p class="hint">This isn't the vacuum's active map right now, so there is no
+          live view for it - only its backup history, under the Backups tab.</p>`;
+        return;
+      }
+      body.innerHTML = `<p class="hint">Loading map...</p>`;
+      const did = $("device").value;
+      const res = await fetch(`${BASE}/api/maps/${encodeURIComponent(did)}/current`);
+      const doc = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        body.innerHTML = `<p class="err">${esc(doc.error || "Could not load the current map")}</p>`;
+        return;
+      }
+      body.innerHTML = `<div id="map-canvas-wrap"><canvas></canvas></div>`;
+      const api = await loadModule();
+      const decoded = api.decodeMap(doc);
+      const canvas = body.querySelector("canvas");
+      const scale = doc.suggested_scale || 5;
+      canvas.width = decoded.cols * scale;
+      canvas.height = decoded.rows * scale;
+      const ctx = canvas.getContext("2d");
+      api.drawBase(ctx, decoded, { scale, showRoomNames: true });
+      if (decoded.dock) {
+        api.drawDock(ctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
+      }
+      if (decoded.robot) {
+        api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+      }
+    }
+
+    function renderBackups(map) {
+      const body = $("subtab-body");
+      if (!map.backups.length) {
+        body.innerHTML = `<p class="hint">No backup history for this map yet.</p>`;
+        return;
+      }
+      const rows = map.backups.map((b) => `
+        <tr>
+          <td>${esc(new Date(b.time * 1000).toLocaleString())}</td>
+          <td>${b.first ? "Yes" : ""}</td>
+        </tr>`).join("");
+      body.innerHTML = `
+        <table>
+          <thead><tr><th>Saved</th><th>First of its set</th></tr></thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <p class="hint" style="margin-top:12px">Listing only for now - restoring a backup isn't supported
+          here yet, and thumbnails aren't shown since decoding them turned out to need parsing an
+          undocumented archive format the phone app itself doesn't appear to use either.</p>`;
+    }
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    loadDevices();
+  </script>
+</body>
+</html>

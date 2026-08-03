@@ -294,6 +294,49 @@ def api_classifications():
     })
 
 
+@app.route("/maps")
+def maps():
+    return render_template("maps.html", base=_ingress_base(), viewer=_viewer(), page="maps")
+
+
+@app.route("/api/maps/devices")
+def api_maps_devices():
+    return jsonify({"devices": [
+        {"did": d["did"], "name": d.get("name"), "model": d.get("model")}
+        for d in store.list_devices()
+    ]})
+
+
+@app.route("/api/maps/<did>")
+def api_maps_list(did):
+    """Maps and their backup history for one device.
+
+    Proxied through Home Assistant rather than talked to directly: the
+    Dreame cloud login and protocol client live in the integration, and
+    duplicating that client here is exactly the kind of thing that drifts
+    out of sync with it. See ha_client.get_api.
+    """
+    result = ha_client.get_api(f"/dreame_vacuum_core/maps/{did}")
+    if result is None:
+        return jsonify({"error": "Could not reach Home Assistant, or that "
+                                  "vacuum is not registered yet"}), 502
+    return jsonify(result)
+
+
+@app.route("/api/maps/<did>/current")
+def api_maps_current(did):
+    """The live map document for whichever map is currently active -
+    the same endpoint the Lovelace card itself calls, so rendering can
+    never drift between the two."""
+    refresh = request.args.get("refresh") in ("1", "true", "yes")
+    path = f"/dreame_vacuum_core/map/{did}" + ("?refresh=1" if refresh else "")
+    result = ha_client.get_api(path)
+    if result is None:
+        return jsonify({"error": "Could not reach Home Assistant, or no map "
+                                  "is available for this vacuum yet"}), 502
+    return jsonify(result)
+
+
 @app.route("/api/classifications", methods=["POST"])
 def api_create_classification():
     body = request.get_json(silent=True) or {}

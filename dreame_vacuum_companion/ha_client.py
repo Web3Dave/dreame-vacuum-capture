@@ -60,6 +60,26 @@ def get_state(entity_id: str) -> dict | None:
     return r.json()
 
 
+def get_api(path: str, timeout: int = 15) -> dict | None:
+    """Anything else under Home Assistant's own /api/ namespace.
+
+    For the integration's own custom views (e.g. /dreame_vacuum_core/maps/
+    <did>) - the Dreame cloud client and login session live in the
+    integration, not here, so this add-on asks Home Assistant for
+    already-decoded data rather than duplicating that client. `path` is
+    relative to /api, matching how get_state's own /states/<id> is built.
+    Returns None on anything but a 200 - the caller cannot usefully tell
+    "not found" from "vacuum unreachable" apart anyway, and does not need to.
+    """
+    try:
+        r = requests.get(f"{SUPERVISOR_CORE}{path}", headers=_headers(), timeout=timeout)
+    except (requests.RequestException, HomeAssistantUnavailable):
+        return None
+    if r.status_code != 200:
+        return None
+    return r.json()
+
+
 def get_states(entity_ids: list[str]) -> dict[str, dict]:
     """Individual lookups - the full /states dump is large and we only ever
     care about a handful of known entities."""
