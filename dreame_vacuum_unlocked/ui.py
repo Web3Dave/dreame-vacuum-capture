@@ -323,6 +323,22 @@ def api_maps_list(did):
     return jsonify(result)
 
 
+@app.route("/api/maps/<did>/backup/<map_id>/<time>")
+def api_maps_backup(did, map_id, time):
+    """One historical backup map, decoded to a document.
+
+    Proxied through Home Assistant like the listing and current-map routes -
+    the cloud client and the frame decoder live in the integration, so we ask
+    it to render a specific backup (identified by its map id and Unix time).
+    """
+    href = f"/dreame_vacuum_unlocked_integration/maps/{did}/backup/{map_id}/{time}"
+    result = ha_client.get_api(href)
+    if result is None:
+        return jsonify({"error": "Could not reach Home Assistant, or that "
+                                  "backup could not be decoded"}), 502
+    return jsonify(result)
+
+
 @app.route("/api/maps/<did>/current")
 def api_maps_current(did):
     """The live map document for whichever map is currently active -

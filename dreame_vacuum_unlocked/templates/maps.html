@@ -49,6 +49,12 @@
     table { width:100%; border-collapse:collapse; font-size:14px; }
     th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
     th { color:var(--muted); font-weight:500; font-size:12.5px; text-transform:uppercase; letter-spacing:.03em; }
+    tr[data-backup-time] { cursor:pointer; }
+    tr[data-backup-time]:hover { background:var(--card-hover, rgba(128,128,128,.08)); }
+    .chev { float:right; color:var(--muted); font-size:12px; }
+    .backup-preview td { padding:14px; }
+    .backup-map-wrap { display:flex; justify-content:center; }
+    .backup-map-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; }
     .current-pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px;
                     background:var(--ok); color:#fff; margin-left:6px; }
   </style>
@@ -202,18 +208,68 @@
         return;
       }
       const rows = map.backups.map((b) => `
-        <tr>
-          <td>${esc(new Date(b.time * 1000).toLocaleString())}</td>
+        <tr data-backup-time="${b.time}">
+          <td class="backup-toggle">${esc(new Date(b.time * 1000).toLocaleString())}<span class="chev">&#9662;</span></td>
           <td>${b.first ? "Yes" : ""}</td>
+        </tr>
+        <tr class="backup-preview" data-preview-time="${b.time}" hidden>
+          <td colspan="2">
+            <div class="backup-map-wrap"><p class="hint">Loading...</p></div>
+          </td>
         </tr>`).join("");
       body.innerHTML = `
         <table>
-          <thead><tr><th>Saved</th><th>First of its set</th></tr></thead>
+          <thead><tr><th style="width:60%">Saved</th><th>First of its set</th></tr></thead>
           <tbody>${rows}</tbody>
         </table>
-        <p class="hint" style="margin-top:12px">Listing only for now - restoring a backup isn't supported
-          here yet, and thumbnails aren't shown since decoding them turned out to need parsing an
-          undocumented archive format the phone app itself doesn't appear to use either.</p>`;
+        <p class="hint" style="margin-top:12px">Click a saved time to expand and render that backup map.
+          Restoring a backup isn't supported yet, but every backup's map is decoded and drawn here
+          with the same renderer the live map uses.</p>`;
+
+      body.querySelectorAll("tr[data-backup-time]").forEach((tr) => {
+        tr.addEventListener("click", () => toggleBackup(tr));
+      });
+    }
+
+    async function toggleBackup(headerTr) {
+      const time = headerTr.dataset.backupTime;
+      const previewTr = headerTr.parentElement.querySelector(`tr[data-preview-time="${time}"]`);
+      const chev = headerTr.querySelector(".chev");
+      if (!previewTr.hidden) {
+        previewTr.hidden = true;
+        chev.textContent = "\u25BE";
+        return;
+      }
+      previewTr.hidden = false;
+      chev.textContent = "\u25B4";
+      const wrap = previewTr.querySelector(".backup-map-wrap");
+      // Only fetch once per expand - keep the map cached in the DOM node.
+      if (wrap.dataset.loaded) return;
+      wrap.dataset.loaded = "1";
+      const did = $("device").value;
+      const mapId = selectedMapId;
+      const res = await fetch(`${BASE}/api/maps/${encodeURIComponent(did)}/backup/${mapId}/${time}`);
+      const doc = await res.json().catch(() => ({}));
+      if (!res.ok || !doc.grid) {
+        wrap.innerHTML = `<p class="err">${esc(doc.error || "Could not decode this backup map")}</p>`;
+        return;
+      }
+      const api = await loadModule();
+      const decoded = api.decodeMap(doc);
+      const scale = doc.suggested_scale || 5;
+      const canvas = document.createElement("canvas");
+      canvas.width = decoded.cols * scale;
+      canvas.height = decoded.rows * scale;
+      const ctx = canvas.getContext("2d");
+      api.drawBase(ctx, decoded, { scale, showRoomNames: true });
+      if (decoded.dock) {
+        api.drawDock(ctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
+      }
+      if (decoded.robot) {
+        api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+      }
+      wrap.innerHTML = "";
+      wrap.appendChild(canvas);
     }
 
     function esc(value) {
