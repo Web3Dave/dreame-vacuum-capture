@@ -53,8 +53,9 @@
     tr[data-backup-time]:hover { background:var(--card-hover, rgba(128,128,128,.08)); }
     .chev { float:right; color:var(--muted); font-size:12px; }
     .backup-preview td { padding:14px; }
-    .backup-map-wrap { display:flex; justify-content:center; }
+    .backup-map-wrap { display:flex; justify-content:center; flex-direction:column; align-items:center; gap:8px; }
     .backup-map-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; }
+    .backup-devices-toggle { font-size:13px; color:var(--muted); cursor:pointer; user-select:none; }
     .current-pill { display:inline-block; padding:2px 9px; border-radius:999px; font-size:11.5px;
                     background:var(--ok); color:#fff; margin-left:6px; }
   </style>
@@ -260,19 +261,35 @@
       const api = await loadModule();
       const decoded = api.decodeMap(doc);
       const scale = doc.suggested_scale || 5;
-      const canvas = document.createElement("canvas");
-      canvas.width = decoded.cols * scale;
-      canvas.height = decoded.rows * scale;
-      const ctx = canvas.getContext("2d");
-      api.drawBase(ctx, decoded, { scale, showRoomNames: true });
-      if (decoded.dock) {
-        api.drawDock(ctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
-      }
-      if (decoded.robot) {
-        api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
-      }
-      wrap.innerHTML = "";
-      wrap.appendChild(canvas);
+      // A restored map's robot/dock positions are historical and usually bogus
+      // (the robot sits at 0,0, the dock wherever it was saved), so show them
+      // off by default. The toggle redraws with them on.
+      const showDevices = () => wrap.querySelector("#backup-devices").checked;
+      const render = () => {
+        const canvas = document.createElement("canvas");
+        canvas.width = decoded.cols * scale;
+        canvas.height = decoded.rows * scale;
+        const ctx = canvas.getContext("2d");
+        api.drawBase(ctx, decoded, { scale, showRoomNames: true });
+        if (showDevices()) {
+          if (decoded.dock) {
+            api.drawDock(ctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
+          }
+          if (decoded.robot) {
+            api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+          }
+        }
+        const holder = wrap.querySelector(".backup-canvas");
+        holder.innerHTML = "";
+        holder.appendChild(canvas);
+      };
+      wrap.innerHTML = `
+        <label class="backup-devices-toggle">
+          <input type="checkbox" id="backup-devices"> Show vacuum &amp; dock
+        </label>
+        <div class="backup-canvas"></div>`;
+      wrap.querySelector("#backup-devices").addEventListener("change", render);
+      render();
     }
 
     function esc(value) {
