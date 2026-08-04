@@ -13,8 +13,9 @@
       :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
     }
     * { box-sizing: border-box; }
-    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
-           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    body { margin:0; padding:24px 12px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           overflow-x:hidden; }
     header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
     h1 { font-size:20px; margin:0; font-weight:600; }
     .sub { color:var(--muted); font-size:13px; }
@@ -34,8 +35,11 @@
     code { background:rgba(127,127,127,.14); padding:1px 5px; border-radius:4px;
            font-family:ui-monospace,SFMono-Regular,Menlo,monospace; font-size:12px; }
     footer { margin-top:28px; color:var(--muted); font-size:12px; }
-    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
-    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line);
+          width:100%; max-width:100vw; overflow-x:auto; flex-wrap:nowrap;
+          -webkit-overflow-scrolling:touch; scrollbar-width:none; -ms-overflow-style:none; }
+    nav::-webkit-scrollbar { display:none; }
+    nav a { flex:0 0 auto; padding:8px 14px; white-space:nowrap; text-decoration:none; color:var(--muted); font-size:14px;
             border-bottom:2px solid transparent; margin-bottom:-1px; }
     nav a:hover { color:var(--text); }
     nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }

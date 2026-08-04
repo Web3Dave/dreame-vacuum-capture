@@ -20,6 +20,9 @@
       background: var(--bg); color: var(--text);
       font: 15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
       -webkit-tap-highlight-color: transparent;
+      /* Nothing may push the page wider than the screen; wide bars scroll
+         inside themselves instead. */
+      overflow-x: hidden;
     }
     /* ---- top page nav (kept slim) ---- */
     header { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
@@ -28,9 +31,10 @@
     .sub { color:var(--muted); font-size:13px; }
     nav { display:flex; gap:2px; margin:8px 0 0; padding:0 12px;
           border-bottom:1px solid var(--line); overflow-x:auto;
+          width:100%; max-width:100vw; flex-wrap:nowrap;
           -webkit-overflow-scrolling:touch; scrollbar-width:none; }
     nav::-webkit-scrollbar { display:none; }
-    nav a { padding:8px 13px; white-space:nowrap; text-decoration:none;
+    nav a { flex:0 0 auto; padding:8px 13px; white-space:nowrap; text-decoration:none;
             color:var(--muted); font-size:14px; border-bottom:2px solid transparent; }
     nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
 
@@ -40,18 +44,21 @@
              border:1px solid var(--line); background:var(--card); color:var(--text);
              flex:1; min-width:0; }
 
-    /* ---- Room / All / Zone tab bar: horizontally scrollable on mobile ---- */
+    /* ---- Room / All / Zone tab bar: never wider than the screen, scrolls
+           horizontally when the tabs inside it are too wide to fit ---- */
     #mode-tabs {
-      display:flex; gap:8px; padding:14px 16px 6px; overflow-x:auto;
+      display:flex; gap:8px; padding:10px 16px 8px;
+      width:100%; max-width:100vw; overflow-x:auto;
       -webkit-overflow-scrolling:touch; scrollbar-width:none;
-      scroll-snap-type:x proximity;
+      -ms-overflow-style:none;
     }
     #mode-tabs::-webkit-scrollbar { display:none; }
+    #mode-tabs > * { flex:0 0 auto; }
     .mode-tab {
       flex:0 0 auto; padding:9px 22px; border-radius:999px; font-size:15px;
       font-weight:600; color:var(--muted); background:var(--card);
       border:1px solid var(--line); cursor:pointer; white-space:nowrap;
-      scroll-snap-align:center; transition:color .15s, background .15s, border-color .15s;
+      transition:color .15s, background .15s, border-color .15s;
     }
     .mode-tab.active { color:#fff; background:var(--accent); border-color:var(--accent); }
     .mode-tab .dot { font-size:12px; opacity:.8; margin-right:2px; }
