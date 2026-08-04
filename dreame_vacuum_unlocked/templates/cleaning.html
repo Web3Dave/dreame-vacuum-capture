@@ -2,47 +2,109 @@
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
   <title>Cleaning - Dreame Companion</title>
   <style>
     :root {
       --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
-      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32;
+      --bad: #c62828; --clean: #03a9f4; --clean-dark: #0288d1;
+      --tabbar-h: 88px; --cleanbar-h: 92px;
     }
     @media (prefers-color-scheme: dark) {
       :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
     }
     * { box-sizing: border-box; }
-    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
-           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
-    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
-    h1 { font-size:20px; margin:0; font-weight:600; }
+    html, body { width: 100%; margin: 0; padding: 0; }
+    body {
+      background: var(--bg); color: var(--text);
+      font: 15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+      -webkit-tap-highlight-color: transparent;
+    }
+    /* ---- top page nav (kept slim) ---- */
+    header { display:flex; align-items:baseline; gap:10px; flex-wrap:wrap;
+             padding:10px 16px 0; }
+    h1 { font-size:18px; margin:0; font-weight:600; }
     .sub { color:var(--muted); font-size:13px; }
-    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
-    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
-            border-bottom:2px solid transparent; margin-bottom:-1px; }
-    nav a:hover { color:var(--text); }
+    nav { display:flex; gap:2px; margin:8px 0 0; padding:0 12px;
+          border-bottom:1px solid var(--line); overflow-x:auto;
+          -webkit-overflow-scrolling:touch; scrollbar-width:none; }
+    nav::-webkit-scrollbar { display:none; }
+    nav a { padding:8px 13px; white-space:nowrap; text-decoration:none;
+            color:var(--muted); font-size:14px; border-bottom:2px solid transparent; }
     nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
-    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
-    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:8px;
-             border:1px solid var(--line); background:var(--card); color:var(--text); }
-    button.action { font:inherit; font-size:14px; padding:8px 16px; border-radius:999px;
+
+    /* ---- device selector ---- */
+    .device-bar { display:flex; gap:10px; align-items:center; padding:12px 16px 4px; }
+    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:10px;
              border:1px solid var(--line); background:var(--card); color:var(--text);
-             cursor:pointer; }
-    button.action:hover { border-color:var(--accent); color:var(--text); }
-    button.action:disabled { opacity:.45; cursor:not-allowed; }
-    .hint { color:var(--muted); font-size:13px; }
-    .err { color:var(--bad); font-size:13px; }
+             flex:1; min-width:0; }
 
-    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
-    #map-canvas-wrap { display:flex; justify-content:center; }
-    #map-canvas-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; }
+    /* ---- Room / All / Zone tab bar: horizontally scrollable on mobile ---- */
+    #mode-tabs {
+      display:flex; gap:8px; padding:14px 16px 6px; overflow-x:auto;
+      -webkit-overflow-scrolling:touch; scrollbar-width:none;
+      scroll-snap-type:x proximity;
+    }
+    #mode-tabs::-webkit-scrollbar { display:none; }
+    .mode-tab {
+      flex:0 0 auto; padding:9px 22px; border-radius:999px; font-size:15px;
+      font-weight:600; color:var(--muted); background:var(--card);
+      border:1px solid var(--line); cursor:pointer; white-space:nowrap;
+      scroll-snap-align:center; transition:color .15s, background .15s, border-color .15s;
+    }
+    .mode-tab.active { color:#fff; background:var(--accent); border-color:var(--accent); }
+    .mode-tab .dot { font-size:12px; opacity:.8; margin-right:2px; }
 
-    .status-row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:12px;
-                  color:var(--muted); font-size:13px; }
+    /* ---- main content ---- */
+    #content { padding:6px 16px 0; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; }
+    #map-canvas-wrap { display:flex; justify-content:center; margin-bottom:10px; }
+    #map-canvas-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; border-radius:10px; }
+    .status-row { display:flex; gap:12px; align-items:center; flex-wrap:wrap;
+                  color:var(--muted); font-size:13px; margin-top:6px; }
     .status-row .pill { font-size:12px; padding:2px 9px; border-radius:999px;
                         border:1px solid var(--line); color:var(--muted); }
     .status-row .pill.on { color:var(--ok); border-color:var(--ok); }
+    .status-row .mode-pill { color:var(--accent); border-color:var(--accent); }
+
+    /* ---- room selection chips ---- */
+    #room-list { display:flex; flex-wrap:wrap; gap:8px; margin-top:10px; }
+    .room-chip {
+      padding:8px 14px; border-radius:999px; font-size:14px; font-weight:600;
+      color:var(--text); background:var(--card); border:1px solid var(--line);
+      cursor:pointer; transition:all .12s; user-select:none;
+    }
+    .room-chip.selected { color:#fff; background:var(--clean); border-color:var(--clean); }
+    .room-chip:not(.selected):active { border-color:var(--accent); }
+    #room-order { display:flex; flex-wrap:wrap; gap:6px; margin-top:8px; min-height:0; }
+    .order-pill { font-size:12px; padding:3px 10px; border-radius:999px;
+                  background:var(--accent); color:#fff; display:inline-flex; align-items:center; gap:4px; }
+    .order-pill .x { cursor:pointer; opacity:.85; font-weight:700; padding:0 2px; }
+    .hint { color:var(--muted); font-size:13px; }
+    .err { color:var(--bad); font-size:13px; }
+
+    /* ---- shared Clean button: always visible, fixed at bottom ---- */
+    #clean-bar {
+      position:fixed; left:0; right:0; bottom:0; z-index:50;
+      display:flex; align-items:center; justify-content:center; gap:12px;
+      height:var(--cleanbar-h); padding:10px 16px calc(10px + env(safe-area-inset-bottom));
+      background:var(--bg); border-top:1px solid var(--line);
+    }
+    #clean-btn {
+      flex:1; max-width:520px; height:52px; border:none; border-radius:999px;
+      font-size:17px; font-weight:700; color:#fff; cursor:pointer;
+      background:var(--clean); box-shadow:0 4px 14px rgba(3,169,244,.35);
+      transition:transform .1s, background .15s;
+    }
+    #clean-btn:active { transform:scale(.98); }
+    #clean-btn.paused { background:#ff9800; box-shadow:0 4px 14px rgba(255,152,0,.35); }
+    #clean-btn.busy { background:var(--clean-dark); }
+    #clean-btn:disabled { opacity:.5; cursor:not-allowed; }
+    #clean-hint { color:var(--muted); font-size:12px; text-align:center; }
+
+    /* reserve bottom space so content is never hidden behind the fixed bar */
+    body { padding-bottom: calc(var(--cleanbar-h) + 8px); }
   </style>
 </head>
 <body>
@@ -60,13 +122,22 @@
     <a href="{{ base }}/activity">Activity</a>
   </nav>
 
-  <div class="bar">
+  <div class="device-bar">
     <select id="device"><option value="">Loading devices...</option></select>
-    <button class="action" id="refresh">Refresh map</button>
-    <span id="follow-toggle" class="hint" style="cursor:pointer">following: on</span>
+    <button class="action" id="refresh" style="font:inherit;font-size:14px;padding:7px 12px;border-radius:10px;border:1px solid var(--line);background:var(--card);color:var(--text);cursor:pointer;">Refresh</button>
+  </div>
+
+  <div id="mode-tabs">
+    <div class="mode-tab" data-mode="room"><span class="dot">🏠</span>Room</div>
+    <div class="mode-tab active" data-mode="all"><span class="dot">🧹</span>All</div>
+    <div class="mode-tab" data-mode="zone"><span class="dot">📍</span>Zone</div>
   </div>
 
   <div id="content"></div>
+
+  <div id="clean-bar">
+    <button id="clean-btn" disabled>Clean</button>
+  </div>
 
   <script type="module">
     const BASE = "{{ base }}";
@@ -74,10 +145,29 @@
 
     let devices = [];
     let mapModule = null;
-    let follow = true;
     let pollTimer = null;
     let lastDoc = null;
     let lastMapKey = null;
+    let baseCanvas = null;
+    let mode = "all";                  // room | all | zone
+    let statusTimer = null;
+    let currentDevice = null;          // {entity_id, state, name, did}
+    let selectedRooms = [];            // room segment ids in click order
+    let roomNames = {};                // segment id -> name
+
+    // Work-mode codes for "actively cleaning / paused" (mirrors the integration).
+    const MODE_CLEANING = new Set([2, 4, 5, 18, 19, 20, 21, 24, 25, 26, 27, 28, 29, 30]);
+    const isCleaningState = (d) => {
+      if (!d) return false;
+      if (d.state === "cleaning") return true;
+      const wm = d.work_mode;
+      try { return MODE_CLEANING.has(parseInt(wm, 10)); } catch { return false; }
+    };
+    const isPausedState = (d) => {
+      if (!d) return false;
+      if (d.state === "paused") return true;
+      try { return parseInt(d.work_mode, 10) === 1; } catch { return false; }
+    };
 
     async function loadModule() {
       if (!mapModule) {
@@ -87,8 +177,23 @@
       return mapModule;
     }
 
+    // ---- mode tabs ----
+    document.querySelectorAll(".mode-tab").forEach((tab) => {
+      tab.addEventListener("click", () => {
+        setMode(tab.dataset.mode);
+      });
+    });
+    function setMode(m) {
+      mode = m;
+      document.querySelectorAll(".mode-tab").forEach((t) =>
+        t.classList.toggle("active", t.dataset.mode === m));
+      renderModeContent();
+      updateCleanBar();
+    }
+
+    // ---- device load ----
     async function loadDevices() {
-      const res = await fetch(`${BASE}/api/maps/devices`);
+      const res = await fetch(`${BASE}/api/cleaning/devices`);
       const body = await res.json().catch(() => ({}));
       devices = body.devices || [];
       const select = $("device");
@@ -103,28 +208,95 @@
     }
 
     function onDeviceChange(did) {
+      currentDevice = devices.find((d) => d.did === did) || null;
       stopPolling();
-      if (!did) { $("content").innerHTML = ""; return; }
+      if (!currentDevice) { $("content").innerHTML = ""; updateCleanBar(); return; }
       loadMap(true);
+      startStatusPolling();
     }
-
     $("device").addEventListener("change", (e) => onDeviceChange(e.target.value));
     $("refresh").addEventListener("click", () => loadMap(true));
-    $("follow-toggle").addEventListener("click", () => {
-      follow = !follow;
-      $("follow-toggle").textContent = `following: ${follow ? "on" : "off"}`;
-      if (follow) startPolling();
-      else stopPolling();
-    });
 
+    // ---- live status polling (keeps the Clean/Pause button truthful) ----
+    function startStatusPolling() {
+      stopStatusPolling();
+      statusTimer = setTimeout(function tick() {
+        pollStatus();
+        statusTimer = setTimeout(tick, 2000);
+      }, 2000);
+    }
+    function stopStatusPolling() { if (statusTimer) { clearTimeout(statusTimer); statusTimer = null; } }
+
+    async function pollStatus() {
+      if (!currentDevice || !currentDevice.entity_id) return;
+      try {
+        const res = await fetch(`${BASE}/api/cleaning/devices`);
+        const body = await res.json().catch(() => ({}));
+        const fresh = (body.devices || []).find((d) => d.did === currentDevice.did);
+        if (fresh) {
+          if (!currentDevice.state) currentDevice.state = {};
+          Object.assign(currentDevice.state, fresh.state || {});
+          updateCleanBar();
+        }
+      } catch { /* transient - keep last known state */ }
+    }
+
+    // ---- shared Clean button ----
+    async function callService(service, extra) {
+      const data = { entity_id: currentDevice.entity_id };
+      Object.assign(data, extra || {});
+      const res = await fetch(`${BASE}/api/service`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ domain: "vacuum", service, data }),
+      });
+      return res.ok;
+    }
+
+    async function onCleanPressed() {
+      if (!currentDevice || !currentDevice.entity_id) return;
+      if (isCleaningState(currentDevice.state)) {
+        await callService("pause");          // cleaning -> pause
+      } else {
+        await callService("start");          // idle/paused -> clean (All = whole house)
+      }
+      // Re-read live state shortly after the command lands.
+      setTimeout(pollStatus, 800);
+    }
+    $("clean-btn").addEventListener("click", onCleanPressed);
+
+    function cleanLabel() {
+      if (mode === "room" && selectedRooms.length) {
+        // Room selection is captured in order; the room-targeted command is the
+        // next increment - for now it runs the same auto clean and we note it.
+        return selectedRooms.length === 1 ? "Clean 1 room" : `Clean ${selectedRooms.length} rooms`;
+      }
+      if (mode === "zone") return "Clean zone";
+      return "Clean";
+    }
+
+    function updateCleanBar() {
+      const btn = $("clean-btn");
+      const st = currentDevice?.state;
+      if (!currentDevice || !currentDevice.entity_id) {
+        btn.disabled = true; btn.textContent = "Clean"; btn.className = "";
+        return;
+      }
+      if (isPausedState(st)) {
+        btn.textContent = "Continue"; btn.disabled = false; btn.className = "paused";
+      } else if (isCleaningState(st)) {
+        btn.textContent = "Pause"; btn.disabled = false; btn.className = "busy";
+      } else {
+        btn.textContent = cleanLabel(); btn.disabled = false; btn.className = "";
+      }
+    }
+
+    // ---- rendering ----
     function renderEmpty(msg) {
       $("content").innerHTML = `<p class="hint">${esc(msg)}</p>`;
     }
 
-    function stopPolling() {
-      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
-    }
-
+    function stopPolling() { if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; } }
     function startPolling() {
       stopPolling();
       pollTimer = setTimeout(function tick() {
@@ -136,49 +308,46 @@
     async function loadMap(refresh) {
       const did = $("device").value;
       if (!did) return;
-      // Keep the page responsive: refresh requests are slow (a round trip to
-      // the device), so only the explicit Refresh button sends refresh=1.
       const url = `${BASE}/api/maps/${encodeURIComponent(did)}/current${refresh ? "?refresh=1" : ""}`;
       const body = $("content");
       let res;
-      try {
-        res = await fetch(url);
-      } catch {
-        if (!refresh) return; // a transient fetch failure shouldn't spam the page
-        body.innerHTML = `<p class="err">Could not reach Home Assistant.</p>`;
-        return;
-      }
+      try { res = await fetch(url); }
+      catch { if (!refresh) return; body.innerHTML = `<p class="err">Could not reach Home Assistant.</p>`; return; }
       const doc = await res.json().catch(() => ({}));
       if (!res.ok) {
-        if (!refresh) return; // keep showing the last good map on a quiet poll
+        if (!refresh) return;
         body.innerHTML = `<p class="err">${esc(doc.error || "Could not load the map")}</p>`;
         return;
       }
       lastDoc = doc;
-      if (follow) startPolling(); // keep following unless the user turned it off
-      renderMap(doc);
+      roomNames = doc.room_names || {};
+      startPolling();
+      renderModeContent();
     }
 
-    // Cached per-map static layer: the base map + dock never change between
-    // polls, only the robot moves. Redrawing the whole grid every 2s is
-    // wasteful, so we draw the static layer once into an offscreen canvas and
-    // composite it fresh each tick - this avoids both re-decoding and the
-    // ghosting that layering opaque draws on one canvas would leave.
-    let baseCanvas = null;   // offscreen: rooms + walls + dock for the current map
-
-    async function renderMap(doc) {
+    // Re-render just the tab-specific bits (map + room list) without refetching.
+    function renderModeContent() {
       const body = $("content");
+      const doc = lastDoc;
+      if (!doc) { renderEmpty(currentDevice ? "Loading map..." : "No device selected."); return; }
+      // Drop panels from any other mode so switching tabs doesn't stack them.
+      ["#all-card", "#zone-card", "#room-panel", ".status-row"].forEach((sel) => {
+        body.querySelectorAll(sel).forEach((el) => el.remove());
+      });
+      drawMap(body, doc);
+      if (mode === "room") drawRoomList(body);
+      else if (mode === "all") drawAllCard(body);
+      else drawZoneCard(body);
+      updateStatus(doc);
+    }
+
+    async function drawMap(body, doc) {
       const api = await loadModule();
       let decoded;
-      try {
-        decoded = api.decodeMap(doc);
-      } catch (err) {
-        body.innerHTML = `<p class="err">${esc(err.message || "Could not decode the map")}</p>`;
-        return;
-      }
+      try { decoded = api.decodeMap(doc); }
+      catch (err) { body.innerHTML = `<p class="err">${esc(err.message || "Could not decode the map")}</p>`; return; }
       const scale = doc.suggested_scale || 5;
       const key = `${doc.map_id}|${doc.cells.join("x")}|${doc.origin.join(",")}`;
-
       if (!baseCanvas || lastMapKey !== key) {
         lastMapKey = key;
         baseCanvas = document.createElement("canvas");
@@ -190,39 +359,107 @@
           api.drawDock(bctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
         }
       }
-
-      const view = body.querySelector("canvas#view");
-      if (!view) {
-        body.innerHTML = `<div id="map-canvas-wrap"><canvas id="view"></canvas></div>`;
+      let wrap = body.querySelector("#map-canvas-wrap");
+      if (!wrap) {
+        wrap = document.createElement("div"); wrap.id = "map-canvas-wrap";
+        wrap.innerHTML = `<canvas id="view"></canvas>`;
+        body.prepend(wrap);
       }
-      const canvas = body.querySelector("canvas#view");
+      const canvas = wrap.querySelector("canvas#view");
       if (canvas.width !== baseCanvas.width || canvas.height !== baseCanvas.height) {
-        canvas.width = baseCanvas.width;
-        canvas.height = baseCanvas.height;
+        canvas.width = baseCanvas.width; canvas.height = baseCanvas.height;
       }
       const ctx = canvas.getContext("2d");
-      // Fresh composite each tick from the static layer + the live robot.
       ctx.clearRect(0, 0, canvas.width, canvas.height);
       ctx.drawImage(baseCanvas, 0, 0);
       if (decoded.robot) {
         api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
       }
-      updateStatus(doc);
+    }
+
+    function drawAllCard(body) {
+      let c = body.querySelector("#all-card");
+      if (!c) {
+        c = document.createElement("div"); c.id = "all-card"; c.className = "card";
+        c.style.marginTop = "10px";
+        body.appendChild(c);
+      }
+      c.innerHTML = `<div style="font-weight:600">Clean whole house</div>
+        <div class="hint" style="margin-top:2px">Press <b>Clean</b> below to start an automatic full-home clean.</div>`;
+    }
+
+    function drawZoneCard(body) {
+      let c = body.querySelector("#zone-card");
+      if (!c) {
+        c = document.createElement("div"); c.id = "zone-card"; c.className = "card";
+        c.style.marginTop = "10px";
+        body.appendChild(c);
+      }
+      c.innerHTML = `<div style="font-weight:600">Zone cleaning</div>
+        <div class="hint" style="margin-top:2px">Zone cleaning is coming in the next update.</div>`;
+    }
+
+    function drawRoomList(body) {
+      let wrap = body.querySelector("#room-panel");
+      if (!wrap) {
+        wrap = document.createElement("div"); wrap.id = "room-panel";
+        body.appendChild(wrap);
+      }
+      const ids = Object.keys(roomNames);
+      if (!ids.length) {
+        wrap.innerHTML = `<div class="hint" style="margin-top:10px">No named rooms on this map yet.</div>`;
+        return;
+      }
+      const selected = new Set(selectedRooms);
+      const chips = ids.map((id) => {
+        const name = roomNames[id];
+        const on = selected.has(id);
+        const order = selectedRooms.indexOf(id) + 1;
+        return `<div class="room-chip${on ? " selected" : ""}" data-id="${esc(id)}" data-name="${esc(name)}">
+            ${esc(name)}${on ? ` · ${order}` : ""}</div>`;
+      }).join("");
+      const orderPills = selectedRooms.map((id) =>
+        `<span class="order-pill">${esc(roomNames[id] || id)}<span class="x" data-id="${esc(id)}">×</span></span>`).join("");
+      wrap.innerHTML = `
+        <div style="font-weight:600;margin-top:10px">Select rooms (tap in order)</div>
+        <div id="room-list">${chips}</div>
+        <div id="room-order">${orderPills}</div>`;
+
+      wrap.querySelectorAll(".room-chip").forEach((chip) => {
+        chip.addEventListener("click", () => toggleRoom(chip.dataset.id));
+      });
+      wrap.querySelectorAll(".order-pill .x").forEach((x) => {
+        x.addEventListener("click", (e) => { e.stopPropagation(); removeRoom(x.dataset.id); });
+      });
+    }
+
+    function toggleRoom(id) {
+      const i = selectedRooms.indexOf(id);
+      if (i >= 0) { selectedRooms.splice(i, 1); }
+      else { selectedRooms.push(id); }
+      drawRoomList($("content"));
+      updateCleanBar();
+    }
+    function removeRoom(id) {
+      selectedRooms = selectedRooms.filter((r) => r !== id);
+      drawRoomList($("content"));
+      updateCleanBar();
     }
 
     function updateStatus(doc) {
-      let pill = $("status-pill");
-      if (!pill) {
-        const row = document.createElement("div");
-        row.className = "status-row";
-        row.innerHTML = `<span id="status-pill" class="pill"></span><span id="status-map"></span>`;
+      let row = $("content").querySelector(".status-row");
+      if (!row) {
+        row = document.createElement("div"); row.className = "status-row";
         $("content").appendChild(row);
-        pill = $("status-pill");
       }
+      const st = currentDevice?.state || {};
+      const stateLabel = st.device_state || st.state || "unknown";
+      const pillHtml = `<span class="pill mode-pill">${esc(stateLabel)}</span>`;
+      row.innerHTML = `<span id="status-pill" class="pill"></span>${pillHtml}
+        <span id="status-map">map ${doc.map_id} · ${Object.keys(roomNames).length} rooms</span>`;
       const hasRobot = !!(doc.robot && doc.robot.length);
-      pill.textContent = hasRobot ? "robot on map" : "no robot on map";
-      pill.className = "pill" + (hasRobot ? " on" : "");
-      $("status-map").textContent = `map ${doc.map_id} · ${(doc.room_names ? Object.keys(doc.room_names).length : 0)} rooms`;
+      $("status-pill").textContent = hasRobot ? "robot on map" : "no robot on map";
+      $("status-pill").className = "pill" + (hasRobot ? " on" : "");
     }
 
     function esc(value) {

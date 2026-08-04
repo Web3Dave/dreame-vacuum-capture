@@ -312,6 +312,40 @@ def api_maps_devices():
     ]})
 
 
+@app.route("/api/cleaning/devices")
+def api_cleaning_devices():
+    """Devices plus their vacuum entity and its live state, for the Cleaning tab.
+
+    The Cleaning tab drives the vacuum through Home Assistant (like every other
+    part of this UI) and needs to know both *which* entity to call and *what it
+    is doing* right now, so the shared Clean/Pause button can reflect reality.
+    state comes straight from HA each request - the add-on keeps no copy, so the
+    button can never drift from what the integration reports.
+    """
+    devices = []
+    for d in store.list_devices():
+        entity = (d.get("entities") or {}).get("vacuum")
+        entry = {
+            "did": d["did"],
+            "name": d.get("name"),
+            "model": d.get("model"),
+            "entity_id": entity,
+        }
+        if entity:
+            st = ha_client.get_state(entity)
+            if st:
+                entry["state"] = {
+                    "state": st.get("state"),
+                    **{
+                        k: st.get("attributes", {}).get(k)
+                        for k in ("work_mode", "device_state", "task_running", "fault")
+                        if k in (st.get("attributes") or {})
+                    },
+                }
+        devices.append(entry)
+    return jsonify({"devices": devices})
+
+
 @app.route("/api/maps/<did>")
 def api_maps_list(did):
     """Maps and their backup history for one device.
