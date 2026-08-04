@@ -728,6 +728,12 @@ def _script_yaml(task, calls):
                     rendered = "true" if value else "false"
                 elif isinstance(value, str):
                     rendered = value
+                elif isinstance(value, list):
+                    # A flow-style YAML list, e.g. rooms: [1, 3, 2].
+                    rendered = "[" + ", ".join(
+                        "true" if v is True else "false" if v is False else str(v)
+                        for v in value
+                    ) + "]"
                 elif isinstance(value, float) and value.is_integer():
                     rendered = str(int(value))
                 else:

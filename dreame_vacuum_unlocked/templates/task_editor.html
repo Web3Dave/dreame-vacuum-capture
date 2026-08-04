@@ -101,6 +101,16 @@
     .row-actions button { padding:4px 10px; font-size:12.5px; }
     .add-row { display:flex; gap:8px; margin-top:10px; }
     .add-row select { flex:1; }
+    /* clean_rooms step: ordered-room selector */
+    .room-editor { border:1px dashed var(--line); border-radius:8px; padding:8px; margin-bottom:10px; }
+    .room-chips { display:flex; flex-wrap:wrap; gap:6px; }
+    .room-chip { padding:5px 11px; border-radius:999px; font-size:12.5px; font-weight:600;
+                 background:var(--card); border:1px solid var(--line); color:var(--text);
+                 cursor:pointer; user-select:none; }
+    .room-chip.sel { background:var(--accent); border-color:var(--accent); color:#fff; }
+    .room-order-row { display:flex; align-items:center; gap:6px; padding:2px 0; font-size:13px; }
+    .room-order-n { color:var(--accent); font-weight:700; width:16px; text-align:right; flex:none; }
+    .room-order-row button { padding:2px 8px; font-size:12px; }
 
     svg { fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 
@@ -210,6 +220,10 @@
                 title="Take a snapshot at the last go-to point">
           <svg viewBox="0 0 24 24"><path d="M23 19a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h4l2-3h6l2 3h4a2 2 0 0 1 2 2z"/><circle cx="12" cy="13" r="4"/></svg>
           Snapshot</button>
+        <button type="button" class="tool" id="tool-cleanrooms" aria-pressed="false"
+                title="Clean a set of rooms, in the order you select them">
+          <svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="3"/><polyline points="4 14 12 20 20 14"/><path d="M4 14c0-2 1-3 2-4M20 14c0-2-1-3-2-4"/></svg>
+          Clean rooms</button>
         <button type="button" class="tool" id="tool-dock" title="Send the vacuum home">
           <svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>
           Return to dock</button>
@@ -276,6 +290,7 @@
       return_to_dock: '<svg viewBox="0 0 24 24"><path d="M3 9l9-7 9 7v11a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><polyline points="9 22 9 12 15 12 15 22"/></svg>',
       start_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/></svg>',
       stop_stream: '<svg viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2"/><line x1="2" y1="2" x2="22" y2="22"/></svg>',
+      clean_rooms: '<svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="3"/><polyline points="4 14 12 20 20 14"/><path d="M4 14c0-2 1-3 2-4M20 14c0-2-1-3-2-4"/></svg>',
     };
 
     let schema = {}, devices = [], tags = [];
@@ -433,6 +448,8 @@
         const pose = {...draft.base, heading: draft.heading};
         mapApi.drawVacuum(ctx, mapDoc, pose, {scale, fov: 70, opacity: .85});
         mapApi.drawHeadingHandle(ctx, mapDoc, pose, {scale});
+      } else if (draft.kind === "rooms") {
+        mapApi.drawRoomSelection(ctx, mapDoc, {scale, selectedOrder: draft.rooms});
       }
     }
 
@@ -474,6 +491,14 @@
         } else if (draft.kind === "heading") {
           info.textContent = `heading ${draft.heading}° - drag the handle to aim the vacuum`;
           $("draft-save").disabled = false;
+        } else if (draft.kind === "rooms") {
+          $("draft-save").disabled = !draft.rooms.length;
+          if (!draft.rooms.length) {
+            info.textContent = "Tap rooms on the map to add them - each tap appends to the order.";
+          } else {
+            const names = draft.rooms.map(r => roomName(r)).join(", ");
+            info.textContent = `${draft.rooms.length} room${draft.rooms.length === 1 ? "" : "s"} in order: ${names}`;
+          }
         }
       } else if (selIndex >= 0 && stepsState[selIndex]) {
         info.textContent = `Step ${selIndex + 1}: ${describe(stepsState[selIndex])}`;
@@ -500,6 +525,7 @@
       const locating = draft ? draft.kind === "location" : tool === "location";
       $("tool-location").setAttribute("aria-pressed", String(!!locating));
       $("tool-heading").setAttribute("aria-pressed", String(!!draft && draft.kind === "heading"));
+      $("tool-cleanrooms").setAttribute("aria-pressed", String(!!draft && draft.kind === "rooms"));
       $("map").classList.toggle("armed", tool === "location" || !!draft);
     }
 
@@ -512,13 +538,38 @@
 
     function armHeading(editIndex, heading) {
       const upto = editIndex != null ? editIndex - 1
-                 : (selIndex >= 0 ? selIndex : stepsState.length - 1);
+                : (selIndex >= 0 ? selIndex : stepsState.length - 1);
       const base = contextPose(upto);
       if (base.x == null) return;
       draft = {kind: "heading", base,
                heading: heading ?? (base.heading != null ? Math.round(base.heading) : 0),
                editIndex: editIndex ?? null};
       syncTools(); updateInfo(); draw();
+    }
+
+    /** Map a room id to its name (the renderer knows the labels). */
+    function roomName(id) {
+      if (mapApi && mapDoc) {
+        const n = (mapDoc.room_names || {})[id];
+        if (n) return n;
+      }
+      return `Room ${id}`;
+    }
+
+    function armRooms(editIndex, rooms) {
+      draft = {kind: "rooms",
+               rooms: Array.isArray(rooms) ? rooms.slice() : [],
+               editIndex: editIndex ?? null};
+      tool = "rooms";
+      syncTools(); updateInfo(); draw();
+    }
+
+    function toggleDraftRoom(id) {
+      if (!draft || draft.kind !== "rooms") return;
+      const i = draft.rooms.indexOf(id);
+      if (i >= 0) draft.rooms.splice(i, 1);
+      else draft.rooms.push(id);
+      updateInfo(); draw();
     }
 
     function cancelDraft() {
@@ -538,6 +589,14 @@
         step = {type: "go_to_point", x: draft.point.x, y: draft.point.y};
       } else if (draft.kind === "heading") {
         step = {type: "rotate_to_heading", heading: draft.heading};
+      } else if (draft.kind === "rooms") {
+        if (!draft.rooms.length) return;
+        // The existing step may carry a "times" value the map editor shouldn't
+        // overwrite - preserve it, only the rooms list changes here.
+        const existing = draft.editIndex != null ? stepsState[draft.editIndex] : null;
+        step = {type: "clean_rooms", rooms: draft.rooms.slice()};
+        if (existing && existing.times !== undefined) step.times = existing.times;
+        else step.times = 1;
       } else return;
       commitStep(step, draft.editIndex);
       draft = null;
@@ -585,7 +644,16 @@
     }
 
     $("map").addEventListener("click", event => {
-      if (!mapDoc || (draft && draft.kind !== "location")) return;
+      if (!mapDoc) return;
+      if (draft && draft.kind === "rooms") {
+        const rect = $("map").getBoundingClientRect();
+        const ratio = $("map").width / rect.width;
+        const room = mapApi.roomAtPixel(mapDoc,
+          (event.clientX - rect.left) * ratio, (event.clientY - rect.top) * ratio, scale);
+        if (room != null) toggleDraftRoom(room);
+        return;
+      }
+      if (draft && draft.kind !== "location") return;
       if (tool !== "location" && !draft) return;
       const point = canvasPoint(event);
       const where = mapApi.describePoint(mapDoc, point.x, point.y);
@@ -607,6 +675,11 @@
         return `Face ${step.heading}°`;
       if (step.type === "take_snapshot")
         return `Snapshot – ${tagName(step.tag || "general")}`;
+      if (step.type === "clean_rooms" && Array.isArray(step.rooms) && step.rooms.length) {
+        const names = step.rooms.map(r => roomName(r)).join(" → ");
+        const times = step.times > 1 ? `, ×${step.times}` : "";
+        return `Clean rooms: ${names}${times}`;
+      }
       return spec.label || step.type;
     }
 
@@ -614,12 +687,19 @@
       const rows = stepsState.map((step, i) => {
         const sel = i === selIndex;
         const spec = schema[step.type] || {fields: []};
-        const fields = sel ? (spec.fields || []).map(f => `
+        // The rooms list gets its own selector UI (multi-select + ordering),
+        // not a plain text input, so drop it from the generic text fields.
+        const roomFields = spec.fields || [];
+        const textFields = step.type === "clean_rooms"
+          ? roomFields.filter(f => f.name !== "rooms") : roomFields;
+        const fields = sel ? textFields.map(f => `
           <label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
             <input data-step="${i}" data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
                    placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`).join("") : "";
         const mapEdit = {go_to_point: "Edit on map", rotate_to_heading: "Adjust heading",
-                         take_snapshot: "Change tag"}[step.type];
+                         take_snapshot: "Change tag", clean_rooms: "Pick rooms on map"}[step.type];
+        const roomEditor = (sel && step.type === "clean_rooms")
+          ? renderRoomsEditor(step, i) : "";
         return `<div class="step-row${sel ? " sel" : ""}" data-row="${i}">
           <div class="row-head" data-selrow="${i}">
             <span class="n">${i + 1}</span>
@@ -627,6 +707,7 @@
             <span class="what">${esc(describe(step))}</span>
           </div>
           ${sel ? `<div class="row-more">
+            ${roomEditor}
             ${fields ? `<div class="row-fields">${fields}</div>` : ""}
             <div class="row-actions">
               ${mapEdit ? `<button type="button" data-mapedit="${i}">${mapEdit}</button>` : ""}
@@ -640,6 +721,40 @@
       $("step-list").innerHTML = rows ||
         `<p class="hint" style="margin:4px">No steps yet. Click the map to add the first go-to point.</p>`;
       syncTools(); updateInfo(); draw();
+    }
+
+    /**
+     * The ordered room list for a clean_rooms step: every room that exists on
+     * the map as a toggleable chip (tap to add to the end of the order or remove
+     * it), plus up/down/remove on each chosen row so the order can be fixed.
+     */
+    function renderRoomsEditor(step, i) {
+      const chosen = (step.rooms || []).slice();
+      const all = Object.keys(mapDoc?.room_names || {}).map(Number).filter(n =>
+        !Number.isNaN(n));
+      const chosenNames = chosen.map(r => esc(roomName(r))).join(" → ");
+      const chips = all.map(r => {
+        const on = chosen.includes(r);
+        return `<span class="room-chip${on ? " sel" : ""}" data-room-chosen="${i}" data-room="${r}"
+                     style="cursor:pointer">${esc(roomName(r))}</span>`;
+      }).join("");
+      const orderRows = chosen.map((r, idx) => `
+        <div class="room-order-row">
+          <span class="room-order-n">${idx + 1}</span>
+          <span class="room-order-name" style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(roomName(r))}</span>
+          <button type="button" data-room-up="${i}" data-room="${r}" ${idx === 0 ? "disabled" : ""}>&uarr;</button>
+          <button type="button" data-room-down="${i}" data-room="${r}" ${idx === chosen.length - 1 ? "disabled" : ""}>&darr;</button>
+          <button type="button" class="danger" data-room-rm="${i}" data-room="${r}">×</button>
+        </div>`).join("");
+      return `
+        <div class="room-editor" style="margin-bottom:10px">
+          <div style="font-size:12px;color:var(--muted);margin-bottom:4px">
+            Rooms in order: ${chosen.length ? `<b>${chosenNames}</b>` : "none selected"}</div>
+          <div style="font-size:12px;color:var(--muted);margin:4px 0">Tap a room to add / remove it:</div>
+          <div class="room-chips">${chips}</div>
+          ${chosen.length ? `<div style="font-size:12px;color:var(--muted);margin:6px 0 2px">Order (use arrows to change):</div>
+            <div class="room-order">${orderRows}</div>` : ""}
+        </div>`;
     }
 
     function collectFromUi() {
@@ -779,14 +894,51 @@
 
     // ---- wiring ----------------------------------------------------------
     document.addEventListener("click", e => {
-      const t = e.target.closest("button, [data-selrow]");
+      const t = e.target.closest("button, [data-selrow], [data-room-chosen]");
       if (!t) return;
+      // Room chips in a clean_rooms step: tap to add to the end / remove.
+      if (t.dataset.roomChosen !== undefined) {
+        const i = Number(t.dataset.roomChosen);
+        const step = stepsState[i];
+        if (step && step.type === "clean_rooms") {
+          const room = Number(t.dataset.room);
+          const list = Array.isArray(step.rooms) ? step.rooms.slice() : [];
+          const at = list.indexOf(room);
+          if (at >= 0) list.splice(at, 1);
+          else list.push(room);
+          step.rooms = list;
+          dirty = true; renderSteps();
+        }
+        return;
+      }
+      // Reorder / remove a room within a clean_rooms step.
+      if (t.dataset.roomUp !== undefined || t.dataset.roomDown !== undefined ||
+          t.dataset.roomRm !== undefined) {
+        const i = Number(t.dataset.roomUp ?? t.dataset.roomDown ?? t.dataset.roomRm);
+        const room = Number(t.dataset.room);
+        const step = stepsState[i];
+        if (step && Array.isArray(step.rooms)) {
+          const at = step.rooms.indexOf(room);
+          if (at >= 0) {
+            if (t.dataset.roomUp !== undefined && at > 0) {
+              [step.rooms[at - 1], step.rooms[at]] = [step.rooms[at], step.rooms[at - 1]];
+            } else if (t.dataset.roomDown !== undefined && at < step.rooms.length - 1) {
+              [step.rooms[at + 1], step.rooms[at]] = [step.rooms[at], step.rooms[at + 1]];
+            } else if (t.dataset.roomRm !== undefined) {
+              step.rooms.splice(at, 1);
+            }
+          }
+          dirty = true; renderSteps();
+        }
+        return;
+      }
       if (t.id === "save-task") saveTask();
       else if (t.id === "draft-save") saveDraft();
       else if (t.id === "draft-cancel") cancelDraft();
       else if (t.id === "tool-location") armLocation(null, null);
       else if (t.id === "tool-heading" && !t.disabled) armHeading(null, null);
       else if (t.id === "tool-snapshot" && !t.disabled) openTagger(null);
+      else if (t.id === "tool-cleanrooms") armRooms(null, null);
       else if (t.id === "tool-dock") { commitStep({type: "return_to_dock"}, null); }
       else if (t.id === "map-refresh") { t.disabled = true; loadMap(true).finally(() => t.disabled = false); }
       else if (t.id === "add-step") { commitStep({type: $("add-type").value}, null); }
@@ -804,6 +956,8 @@
           armHeading(i, step.heading !== undefined ? Number(step.heading) : null);
         } else if (step.type === "take_snapshot") {
           openTagger(i);
+        } else if (step.type === "clean_rooms") {
+          armRooms(i, step.rooms || []);
         }
       }
       else if (t.dataset.rm !== undefined) {

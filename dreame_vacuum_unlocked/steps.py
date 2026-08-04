@@ -17,6 +17,8 @@ noisily where the task did not.
 """
 from __future__ import annotations
 
+import json
+
 # Each field: (name, type, required, default, help)
 STEP_TYPES = {
     "start_stream": {
@@ -67,6 +69,17 @@ STEP_TYPES = {
         "fields": [],
         "service": ("vacuum", "return_to_base"),
     },
+    "clean_rooms": {
+        "label": "Clean rooms",
+        "help": "Clean the chosen rooms in the order listed. The vacuum visits "
+                "them in that order.",
+        "fields": [
+            ("rooms", "list_int", True, None,
+             "Room ids to clean, in order: first id is cleaned first"),
+            ("times", "int", False, 1, "How many times to clean each room"),
+        ],
+        "service": ("dreame_vacuum_unlocked_integration", "clean_rooms"),
+    },
 }
 
 
@@ -85,6 +98,28 @@ def _coerce(value, kind, where):
             return float(value)
         except (TypeError, ValueError):
             raise StepError(f"{where} must be a number, got {value!r}") from None
+    if kind == "list_int":
+        if isinstance(value, str):
+            # Accept a comma/space separated list typed into the field, or JSON.
+            value = value.strip()
+            if value.startswith("["):
+                try:
+                    value = json.loads(value)
+                except ValueError:
+                    value = [part for part in value.strip("[]").split(",") if part.strip()]
+            else:
+                value = [part for part in value.replace(" ", ",").split(",") if part.strip()]
+        if not isinstance(value, (list, tuple)):
+            raise StepError(f"{where} must be a list of room ids, got {value!r}")
+        out = []
+        for item in value:
+            try:
+                out.append(int(item))
+            except (TypeError, ValueError):
+                raise StepError(
+                    f"{where} must be whole room ids, got {item!r}"
+                ) from None
+        return out
     return str(value)
 
 
