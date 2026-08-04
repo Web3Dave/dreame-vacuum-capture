@@ -299,6 +299,11 @@ def maps():
     return render_template("maps.html", base=_ingress_base(), viewer=_viewer(), page="maps")
 
 
+@app.route("/cleaning")
+def cleaning():
+    return render_template("cleaning.html", base=_ingress_base(), viewer=_viewer(), page="cleaning")
+
+
 @app.route("/api/maps/devices")
 def api_maps_devices():
     return jsonify({"devices": [

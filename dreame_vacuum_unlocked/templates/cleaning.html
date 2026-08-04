@@ -1,0 +1,237 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Cleaning - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line); }
+    nav a { padding:8px 14px; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
+    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:8px;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.action { font:inherit; font-size:14px; padding:8px 16px; border-radius:999px;
+             border:1px solid var(--line); background:var(--card); color:var(--text);
+             cursor:pointer; }
+    button.action:hover { border-color:var(--accent); color:var(--text); }
+    button.action:disabled { opacity:.45; cursor:not-allowed; }
+    .hint { color:var(--muted); font-size:13px; }
+    .err { color:var(--bad); font-size:13px; }
+
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; }
+    #map-canvas-wrap { display:flex; justify-content:center; }
+    #map-canvas-wrap canvas { max-width:100%; height:auto; image-rendering:pixelated; }
+
+    .status-row { display:flex; gap:16px; align-items:center; flex-wrap:wrap; margin-top:12px;
+                  color:var(--muted); font-size:13px; }
+    .status-row .pill { font-size:12px; padding:2px 9px; border-radius:999px;
+                        border:1px solid var(--line); color:var(--muted); }
+    .status-row .pill.on { color:var(--ok); border-color:var(--ok); }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    <span class="sub">Cleaning</span>
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/tags">Tags</a>
+    <a href="{{ base }}/classifications">Classifications</a>
+    <a href="{{ base }}/cleaning" aria-current="page">Cleaning</a>
+    <a href="{{ base }}/maps">Maps</a>
+    <a href="{{ base }}/activity">Activity</a>
+  </nav>
+
+  <div class="bar">
+    <select id="device"><option value="">Loading devices...</option></select>
+    <button class="action" id="refresh">Refresh map</button>
+    <span id="follow-toggle" class="hint" style="cursor:pointer">following: on</span>
+  </div>
+
+  <div id="content"></div>
+
+  <script type="module">
+    const BASE = "{{ base }}";
+    const $ = (id) => document.getElementById(id);
+
+    let devices = [];
+    let mapModule = null;
+    let follow = true;
+    let pollTimer = null;
+    let lastDoc = null;
+    let lastMapKey = null;
+
+    async function loadModule() {
+      if (!mapModule) {
+        mapModule = await import("/dreame_vacuum_unlocked_integration/map.js?v=9");
+        await mapModule.loadSprites();
+      }
+      return mapModule;
+    }
+
+    async function loadDevices() {
+      const res = await fetch(`${BASE}/api/maps/devices`);
+      const body = await res.json().catch(() => ({}));
+      devices = body.devices || [];
+      const select = $("device");
+      if (!devices.length) {
+        select.innerHTML = `<option value="">No devices registered yet</option>`;
+        renderEmpty("No devices registered yet. Configure the Dreame vacuum integration first.");
+        return;
+      }
+      select.innerHTML = devices.map((d) =>
+        `<option value="${esc(d.did)}">${esc(d.name || d.did)}</option>`).join("");
+      onDeviceChange(select.value);
+    }
+
+    function onDeviceChange(did) {
+      stopPolling();
+      if (!did) { $("content").innerHTML = ""; return; }
+      loadMap(true);
+    }
+
+    $("device").addEventListener("change", (e) => onDeviceChange(e.target.value));
+    $("refresh").addEventListener("click", () => loadMap(true));
+    $("follow-toggle").addEventListener("click", () => {
+      follow = !follow;
+      $("follow-toggle").textContent = `following: ${follow ? "on" : "off"}`;
+      if (follow) startPolling();
+      else stopPolling();
+    });
+
+    function renderEmpty(msg) {
+      $("content").innerHTML = `<p class="hint">${esc(msg)}</p>`;
+    }
+
+    function stopPolling() {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+    }
+
+    function startPolling() {
+      stopPolling();
+      pollTimer = setTimeout(function tick() {
+        loadMap(false);
+        pollTimer = setTimeout(tick, 2000);
+      }, 2000);
+    }
+
+    async function loadMap(refresh) {
+      const did = $("device").value;
+      if (!did) return;
+      // Keep the page responsive: refresh requests are slow (a round trip to
+      // the device), so only the explicit Refresh button sends refresh=1.
+      const url = `${BASE}/api/maps/${encodeURIComponent(did)}/current${refresh ? "?refresh=1" : ""}`;
+      const body = $("content");
+      let res;
+      try {
+        res = await fetch(url);
+      } catch {
+        if (!refresh) return; // a transient fetch failure shouldn't spam the page
+        body.innerHTML = `<p class="err">Could not reach Home Assistant.</p>`;
+        return;
+      }
+      const doc = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (!refresh) return; // keep showing the last good map on a quiet poll
+        body.innerHTML = `<p class="err">${esc(doc.error || "Could not load the map")}</p>`;
+        return;
+      }
+      lastDoc = doc;
+      if (follow) startPolling(); // keep following unless the user turned it off
+      renderMap(doc);
+    }
+
+    // Cached per-map static layer: the base map + dock never change between
+    // polls, only the robot moves. Redrawing the whole grid every 2s is
+    // wasteful, so we draw the static layer once into an offscreen canvas and
+    // composite it fresh each tick - this avoids both re-decoding and the
+    // ghosting that layering opaque draws on one canvas would leave.
+    let baseCanvas = null;   // offscreen: rooms + walls + dock for the current map
+
+    async function renderMap(doc) {
+      const body = $("content");
+      const api = await loadModule();
+      let decoded;
+      try {
+        decoded = api.decodeMap(doc);
+      } catch (err) {
+        body.innerHTML = `<p class="err">${esc(err.message || "Could not decode the map")}</p>`;
+        return;
+      }
+      const scale = doc.suggested_scale || 5;
+      const key = `${doc.map_id}|${doc.cells.join("x")}|${doc.origin.join(",")}`;
+
+      if (!baseCanvas || lastMapKey !== key) {
+        lastMapKey = key;
+        baseCanvas = document.createElement("canvas");
+        baseCanvas.width = decoded.cols * scale;
+        baseCanvas.height = decoded.rows * scale;
+        const bctx = baseCanvas.getContext("2d");
+        api.drawBase(bctx, decoded, { scale, showRoomNames: true });
+        if (decoded.dock) {
+          api.drawDock(bctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
+        }
+      }
+
+      const view = body.querySelector("canvas#view");
+      if (!view) {
+        body.innerHTML = `<div id="map-canvas-wrap"><canvas id="view"></canvas></div>`;
+      }
+      const canvas = body.querySelector("canvas#view");
+      if (canvas.width !== baseCanvas.width || canvas.height !== baseCanvas.height) {
+        canvas.width = baseCanvas.width;
+        canvas.height = baseCanvas.height;
+      }
+      const ctx = canvas.getContext("2d");
+      // Fresh composite each tick from the static layer + the live robot.
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+      ctx.drawImage(baseCanvas, 0, 0);
+      if (decoded.robot) {
+        api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+      }
+      updateStatus(doc);
+    }
+
+    function updateStatus(doc) {
+      let pill = $("status-pill");
+      if (!pill) {
+        const row = document.createElement("div");
+        row.className = "status-row";
+        row.innerHTML = `<span id="status-pill" class="pill"></span><span id="status-map"></span>`;
+        $("content").appendChild(row);
+        pill = $("status-pill");
+      }
+      const hasRobot = !!(doc.robot && doc.robot.length);
+      pill.textContent = hasRobot ? "robot on map" : "no robot on map";
+      pill.className = "pill" + (hasRobot ? " on" : "");
+      $("status-map").textContent = `map ${doc.map_id} · ${(doc.room_names ? Object.keys(doc.room_names).length : 0)} rooms`;
+    }
+
+    function esc(value) {
+      return String(value ?? "").replace(/[&<>"']/g, (c) => (
+        { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]
+      ));
+    }
+
+    loadDevices();
+  </script>
+</body>
+</html>
