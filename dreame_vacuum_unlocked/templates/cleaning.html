@@ -171,7 +171,7 @@
 
     async function loadModule() {
       if (!mapModule) {
-        mapModule = await import("/dreame_vacuum_unlocked_integration/map.js?v=9");
+        mapModule = await import("/dreame_vacuum_unlocked_integration/map.js?v=10");
         await mapModule.loadSprites();
       }
       return mapModule;
@@ -242,13 +242,13 @@
     }
 
     // ---- shared Clean button ----
-    async function callService(service, extra) {
+    async function callService(service, extra, domain = "vacuum") {
       const data = { entity_id: currentDevice.entity_id };
       Object.assign(data, extra || {});
       const res = await fetch(`${BASE}/api/service`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ domain: "vacuum", service, data }),
+        body: JSON.stringify({ domain, service, data }),
       });
       return res.ok;
     }
@@ -257,8 +257,19 @@
       if (!currentDevice || !currentDevice.entity_id) return;
       if (isCleaningState(currentDevice.state)) {
         await callService("pause");          // cleaning -> pause
+      } else if (mode === "room" && selectedRooms.length) {
+        // Room-targeted clean: send the selected room ids in the order they
+        // were picked. The vacuum cleans them in that order.
+        const rooms = selectedRooms.map((id) => parseInt(id, 10));
+        await callService(
+          "clean_rooms", { rooms },
+          "dreame_vacuum_unlocked_integration"
+        );
+        selectedRooms = [];
+        if (lastDoc) drawMap($("content"), lastDoc);
+        drawRoomList($("content"));
       } else {
-        await callService("start");          // idle/paused -> clean (All = whole house)
+        await callService("start");          // All -> whole-house clean
       }
       // Re-read live state shortly after the command lands.
       setTimeout(pollStatus, 800);
@@ -267,8 +278,6 @@
 
     function cleanLabel() {
       if (mode === "room" && selectedRooms.length) {
-        // Room selection is captured in order; the room-targeted command is the
-        // next increment - for now it runs the same auto clean and we note it.
         return selectedRooms.length === 1 ? "Clean 1 room" : `Clean ${selectedRooms.length} rooms`;
       }
       if (mode === "zone") return "Clean zone";
@@ -348,17 +357,7 @@
       catch (err) { body.innerHTML = `<p class="err">${esc(err.message || "Could not decode the map")}</p>`; return; }
       const scale = doc.suggested_scale || 5;
       const key = `${doc.map_id}|${doc.cells.join("x")}|${doc.origin.join(",")}`;
-      if (!baseCanvas || lastMapKey !== key) {
-        lastMapKey = key;
-        baseCanvas = document.createElement("canvas");
-        baseCanvas.width = decoded.cols * scale;
-        baseCanvas.height = decoded.rows * scale;
-        const bctx = baseCanvas.getContext("2d");
-        api.drawBase(bctx, decoded, { scale, showRoomNames: true });
-        if (decoded.dock) {
-          api.drawDock(bctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
-        }
-      }
+
       let wrap = body.querySelector("#map-canvas-wrap");
       if (!wrap) {
         wrap = document.createElement("div"); wrap.id = "map-canvas-wrap";
@@ -366,15 +365,67 @@
         body.prepend(wrap);
       }
       const canvas = wrap.querySelector("canvas#view");
-      if (canvas.width !== baseCanvas.width || canvas.height !== baseCanvas.height) {
-        canvas.width = baseCanvas.width; canvas.height = baseCanvas.height;
+      const width = decoded.cols * scale;
+      const height = decoded.rows * scale;
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width; canvas.height = height;
       }
       const ctx = canvas.getContext("2d");
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-      ctx.drawImage(baseCanvas, 0, 0);
-      if (decoded.robot) {
-        api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+
+      if (mode === "room") {
+        // Room selection: recede unselected rooms, keep selected ones full
+        // colour with an order-number bubble, and let taps toggle a room.
+        api.drawRoomSelection(ctx, decoded, { scale, selectedOrder: selectedRooms });
+        if (decoded.robot) {
+          api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale, opacity: 0.9 });
+        }
+        if (!canvas._roomClickBound) {
+          canvas._roomClickBound = true;
+          canvas.addEventListener("click", (e) => {
+            const rect = canvas.getBoundingClientRect();
+            const px = (e.clientX - rect.left) * (canvas.width / rect.width);
+            const py = (e.clientY - rect.top) * (canvas.height / rect.height);
+            const room = api.roomAtPixel(decoded, px, py, scale);
+            if (room != null) toggleRoom(String(room));
+          });
+        }
+      } else {
+        // All / Zone: cached static base layer + live robot (ghost-free).
+        if (!baseCanvas || lastMapKey !== key) {
+          lastMapKey = key;
+          baseCanvas = document.createElement("canvas");
+          baseCanvas.width = width;
+          baseCanvas.height = height;
+          const bctx = baseCanvas.getContext("2d");
+          api.drawBase(bctx, decoded, { scale, showRoomNames: true });
+          if (decoded.dock) {
+            api.drawDock(bctx, decoded, { x: decoded.dock[0], y: decoded.dock[1], heading: decoded.dock_angle }, { scale });
+          }
+        }
+        ctx.clearRect(0, 0, canvas.width, canvas.height);
+        ctx.drawImage(baseCanvas, 0, 0);
+        if (decoded.robot) {
+          api.drawVacuum(ctx, decoded, { x: decoded.robot[0], y: decoded.robot[1], heading: decoded.angle }, { scale });
+        }
       }
+    }
+
+    // Room selection is the source of truth, shared by the map badges and the
+    // chip list below. Toggling re-renders the map (so the order bubble moves)
+    // and the chips together.
+    function toggleRoom(id) {
+      const i = selectedRooms.indexOf(id);
+      if (i >= 0) { selectedRooms.splice(i, 1); }
+      else { selectedRooms.push(id); }
+      if (lastDoc) drawMap($("content"), lastDoc);
+      drawRoomList($("content"));
+      updateCleanBar();
+    }
+    function removeRoom(id) {
+      selectedRooms = selectedRooms.filter((r) => r !== id);
+      if (lastDoc) drawMap($("content"), lastDoc);
+      drawRoomList($("content"));
+      updateCleanBar();
     }
 
     function drawAllCard(body) {
@@ -431,19 +482,6 @@
       wrap.querySelectorAll(".order-pill .x").forEach((x) => {
         x.addEventListener("click", (e) => { e.stopPropagation(); removeRoom(x.dataset.id); });
       });
-    }
-
-    function toggleRoom(id) {
-      const i = selectedRooms.indexOf(id);
-      if (i >= 0) { selectedRooms.splice(i, 1); }
-      else { selectedRooms.push(id); }
-      drawRoomList($("content"));
-      updateCleanBar();
-    }
-    function removeRoom(id) {
-      selectedRooms = selectedRooms.filter((r) => r !== id);
-      drawRoomList($("content"));
-      updateCleanBar();
     }
 
     function updateStatus(doc) {
