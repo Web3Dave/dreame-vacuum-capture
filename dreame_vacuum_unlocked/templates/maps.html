@@ -92,7 +92,10 @@
 
     async function loadModule() {
       if (!mapModule) {
-        mapModule = await import("/dreame_vacuum_unlocked_integration/map.js");
+        // Versioned so a browser holding the old (cached) map.js fetches the
+        // new one after an update - the shared renderer is served by the
+        // integration, and its static path is browser-cached.
+        mapModule = await import("/dreame_vacuum_unlocked_integration/map.js?v=8");
         await mapModule.loadSprites();
       }
       return mapModule;
