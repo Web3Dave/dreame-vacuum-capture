@@ -63,6 +63,8 @@ MEDIA_ROOT = "/media/dreame_vacuum_unlocked"
 AUDIO_ROOT = os.path.join(MEDIA_ROOT, "audio")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
+P2P_SPEAK_BINARY = os.path.join(SCRIPT_DIR, "p2p_speak")
+P2P_INTERCOM_BINARY = os.path.join(SCRIPT_DIR, "p2p_intercom")
 RTSP_HOST_PORT = 8554
 MEDIAMTX_API = "http://127.0.0.1:9997"
 STALL_THRESHOLD_SECONDS = 15
@@ -226,6 +228,75 @@ def camera_action(protocol, did, aiid, piid, value):
     return signed_call(protocol, send_command_url(protocol), body)
 
 
+def _read_monitor_audio(protocol, did):
+    """Read Monitor siid 10001 / piid 2 (PropMonitorAudioStatus).
+
+    The device reports its intercom state here. When it arms talk-back it sets
+    a JSON string like {"result":0,"operation":"start","session":"<sid>"}
+    (the session it got in the VOICE_OPERATE value). Returns a parsed dict (or
+    the raw scalar) or None on any failure.
+    """
+    try:
+        resp = protocol.get_properties([{"did": did, "siid": SIID_CAMERA_SERVICE, "piid": 2}])
+        # Accept either a list of results or the raw response.
+        if isinstance(resp, list) and resp:
+            entry = resp[0] if isinstance(resp[0], dict) else resp
+            raw = entry.get("value") if isinstance(entry, dict) else None
+        else:
+            raw = resp
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except Exception:
+                return raw
+        return raw
+    except Exception as err:  # noqa: BLE001 - best effort probe
+        app.logger.warning("could not read 10001.2: %s", err)
+        return None
+
+
+def _cloud_props(protocol, did, keys):
+    """Read props via the app's real channel: POST dreame-user-iot/iotstatus/props.
+
+    The device does NOT serve some Monitor props (incl. 10001.2 intercom status)
+    on the data bus (`code:-1`); the app reads them from this cloud endpoint.
+    """
+    try:
+        return protocol.cloud._api_call(
+            "dreame-user-iot/iotstatus/props", {"did": did, "keys": keys}
+        )
+    except Exception as err:  # noqa: BLE001 - best effort
+        app.logger.warning("cloud props read failed: %s", err)
+        return None
+
+
+def _wait_intercom_cloud(protocol, did, session, seconds=4):
+    """Confirm via the CLOUD props channel that the device armed intercom for
+    `session` (10001.2 echoes {"result":0,"operation":"start","session":<sid>}),
+    polling briefly. Returns True as soon as it's confirmed - IMPORTANT to keep
+    this short so audio is pushed while intercom is still freshly armed."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        resp = _cloud_props(protocol, did, "10001.2")
+        try:
+            entries = (resp or {}).get("data") or []
+            if entries:
+                val = json.loads(entries[0].get("value", "{}"))
+                app.logger.info("10001.2 cloud -> %s", val)
+                if (
+                    val.get("result") == 0
+                    and val.get("operation") == "start"
+                    and val.get("session") == session
+                ):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
+    return False
+
+
 def _check(resp, step):
     ok = resp and resp.get("success") and resp.get("data", {}).get("result", {}).get("code") == 0
     if not ok:
@@ -367,6 +438,86 @@ def _safe_disconnect(protocol):
         protocol.disconnect()
     except Exception:
         app.logger.warning("Failed to cleanly disconnect protocol/MQTT session", exc_info=True)
+
+
+@app.route("/speak", methods=["POST"])
+def speak():
+    """Stream raw audio bytes to the vacuum's speaker over the XP2P
+    talk-back (voice intercom) channel.
+
+    Request: JSON {username, password, country?, four_digit_code, did} with
+    the raw audio (in whatever codec the device's speaker expects) as the
+    request body. The caller transcodes the mp3 -> codec -> raw bytes first.
+
+    Wires up the same login -> identity -> PIN camera session -> p2p_info
+    chain the live camera uses, then hands the audio to the `p2p_speak`
+    binary which opens the SDK's send-voice service and pushes the bytes.
+    """
+    body = _require_body("username", "password", "four_digit_code", "did", "audio")
+    did = body["did"]
+    try:
+        audio = base64.b64decode(body["audio"])
+    except Exception:
+        abort(400, "audio field must be base64")
+    if not audio:
+        abort(400, "Empty audio body")
+
+    protocol = login(body["username"], body["password"], body.get("country", "eu"))
+    try:
+        connect_device(protocol, did)
+        product_id, device_name = get_identity(protocol, did)
+        session = start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
+        # Enter intercom mode WITH the active session. The app's Monitor module
+        # always injects `session` into the VOICE_OPERATE value (Monitor.
+        # startVoice -> sendAction adds session:this.session); the device only
+        # arms talk-back and echoes that session back on 10001.2 when it matches
+        # the active monitor session. Sending it without a session never arms it.
+        start_voice = camera_action(
+            protocol, did, 2, 2,
+            {"session": session, "operType": "intercom", "operation": "start"},
+        )
+        app.logger.info("/speak VOICE_OPERATE start(session=%s) -> %s", session, start_voice)
+        confirmed = _wait_intercom_cloud(protocol, did, session)
+        app.logger.info("/speak intercom confirmed=%s", confirmed)
+        p2p_info = get_p2p_info(protocol, did)
+    except Exception:
+        _safe_disconnect(protocol)
+        raise
+
+    config_path = write_p2p_config(did, product_id, device_name)
+    raw_path = f"/tmp/speak_{did}.raw"
+    with open(raw_path, "wb") as fh:
+        fh.write(audio)
+
+    env = dict(os.environ)
+    env["XP2P_INFO"] = p2p_info
+    timeout = 120
+    try:
+        result = subprocess.run(
+            [P2P_INTERCOM_BINARY, config_path, raw_path, "0", "0"],
+            env=env, capture_output=True, text=True, timeout=timeout,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        app.logger.info("/speak returncode=%s audio_bytes=%d", result.returncode, len(audio))
+        return jsonify({
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "audio_bytes": len(audio),
+            "intercom_confirmed": confirmed,
+            "output": output[-4000:],
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": f"p2p_speak timed out after {timeout}s"})
+    finally:
+        # Leave intercom mode (with the same session it was entered with).
+        try:
+            camera_action(
+                protocol, did, 2, 2,
+                {"session": session, "operType": "intercom", "operation": "end"},
+            )
+        except Exception:
+            app.logger.warning("/speak VOICE_OPERATE end failed", exc_info=True)
+        _safe_disconnect(protocol)
 
 
 @app.route("/devices", methods=["POST"])
