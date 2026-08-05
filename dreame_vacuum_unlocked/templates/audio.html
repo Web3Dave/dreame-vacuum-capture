@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Audio - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px 12px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           overflow-x:hidden; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line);
+          width:100%; max-width:100vw; overflow-x:auto; flex-wrap:nowrap;
+          -webkit-overflow-scrolling:touch; scrollbar-width:none; -ms-overflow-style:none; }
+    nav::-webkit-scrollbar { display:none; }
+    nav a { flex:0 0 auto; padding:8px 14px; white-space:nowrap; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .settings-menu { margin-left:auto; position:relative; }
+    .settings-btn { border:none; background:transparent; color:var(--muted); cursor:pointer;
+                    padding:6px; border-radius:8px; display:flex; align-items:center; justify-content:center; }
+    .settings-btn svg { width:19px; height:19px; fill:none; stroke:currentColor;
+                        stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .settings-dropdown { position:fixed; top:72px; right:16px; background:var(--card);
+                         border:1px solid var(--line); border-radius:8px;
+                         box-shadow:0 6px 20px rgba(0,0,0,.18); min-width:200px; padding:4px; z-index:30; }
+    .settings-dropdown a { display:block; padding:8px 10px; font-size:13.5px; color:var(--text);
+                           text-decoration:none; border-radius:6px; }
+    .settings-dropdown a:hover { background:rgba(127,127,127,.12); }
+
+    .upload-bar { display:flex; gap:10px; align-items:center; margin-bottom:18px; flex-wrap:wrap; }
+    button { font:inherit; font-size:14px; padding:8px 15px; border-radius:8px; cursor:pointer;
+             border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.primary { background:var(--accent); border-color:var(--accent); color:#fff; font-weight:600; }
+    button:hover { filter:brightness(1.06); }
+    button.danger { color:var(--bad); border-color:var(--bad); background:transparent; }
+    button.mini { padding:5px 11px; font-size:13px; border-radius:6px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:12px 18px; }
+    .row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+    .row:last-child { border-bottom:none; }
+    .row .name { flex:1; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .hint { color:var(--muted); font-size:13px; }
+    .err { color:var(--bad); font-size:13px; }
+    audio { height:34px; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    <span class="sub">Audio</span>
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/tags">Tags</a>
+    <a href="{{ base }}/classifications">Classifications</a>
+    <a href="{{ base }}/cleaning">Cleaning</a>
+    <a href="{{ base }}/maps">Maps</a>
+    <a href="{{ base }}/activity">Activity</a>
+      <div class="settings-menu">
+      <button type="button" class="settings-btn" id="settings-btn" aria-haspopup="true" aria-expanded="false" title="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <div class="settings-dropdown" id="settings-dropdown" hidden>
+        <a href="{{ base }}/config">Config</a>
+        <a href="{{ base }}/voice">Custom voice</a>
+        <a href="{{ base }}/audio">Audio</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="upload-bar">
+    <button type="button" class="primary" id="upload-btn">Upload mp3</button>
+    <input type="file" id="file" accept=".mp3,audio/mpeg" hidden>
+    <span class="hint">Upload your mp3 clips here; they become options in Custom voice.</span>
+  </div>
+
+  <div class="card">
+    <div id="rows"><span class="hint">Loading\u2026</span></div>
+  </div>
+  <div id="status" class="err" style="margin-top:12px"></div>
+
+  <script>
+    const BASE = "{{ base }}";
+    const $ = (id) => document.getElementById(id);
+
+    function esc(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    }
+    function status(msg) { $("status").textContent = msg || ""; }
+
+    async function load() {
+      try {
+        const res = await fetch(`${BASE}/api/audio`);
+        const body = await res.json().catch(() => ({}));
+        const files = body.files || [];
+        const wrap = $("rows");
+        if (!files.length) { wrap.innerHTML = `<span class="hint">No audio uploaded yet.</span>`; return; }
+        wrap.innerHTML = files.map((f) => `
+          <div class="row">
+            <div class="name">${esc(f)}</div>
+            <audio controls preload="none" src="${BASE}/api/audio/${encodeURIComponent(f)}"></audio>
+            <button class="mini danger" data-del="${encodeURIComponent(f)}">Delete</button>
+          </div>`).join("");
+        wrap.querySelectorAll("[data-del]").forEach((b) => {
+          b.addEventListener("click", () => del(decodeURIComponent(b.dataset.del), b));
+        });
+      } catch (e) {
+        $("rows").innerHTML = `<span class="err">Could not list audio: ${esc(e.message || e)}</span>`;
+      }
+    }
+
+    async function del(name, btn) {
+      if (!confirm(`Delete ${name}?`)) return;
+      btn.disabled = true;
+      try {
+        const res = await fetch(`${BASE}/api/audio/${encodeURIComponent(name)}`, { method: "DELETE" });
+        const body = await res.json().catch(() => ({}));
+        if (body.ok) { status("Deleted " + name); load(); }
+        else { status("Delete failed: " + (body.error || res.status)); btn.disabled = false; }
+      } catch (e) { status("Delete failed: " + (e.message || e)); btn.disabled = false; }
+    }
+
+    $("upload-btn").addEventListener("click", () => $("file").click());
+    $("file").addEventListener("change", async (e) => {
+      const file = e.target.files && e.target.files[0];
+      if (!file) return;
+      status("Uploading " + file.name + "\u2026");
+      const fd = new FormData();
+      fd.append("file", file);
+      try {
+        const res = await fetch(`${BASE}/api/audio/upload`, { method: "POST", body: fd });
+        const body = await res.json().catch(() => ({}));
+        if (body.ok) { status("Uploaded " + file.name); load(); }
+        else { status("Upload failed: " + (body.error || res.status)); }
+      } catch (err) { status("Upload failed: " + (err.message || err)); }
+      e.target.value = "";
+    });
+
+    (function () {
+      const btn = $("settings-btn");
+      const menu = $("settings-dropdown");
+      btn.addEventListener("click", function (ev) {
+        ev.stopPropagation();
+        const opening = menu.hidden;
+        menu.hidden = !opening;
+        btn.setAttribute("aria-expanded", String(opening));
+      });
+      document.addEventListener("click", function (ev) {
+        if (!menu.hidden && !menu.contains(ev.target) && ev.target !== btn) {
+          menu.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+        }
+      });
+    })();
+
+    load();
+  </script>
+</body>
+</html>

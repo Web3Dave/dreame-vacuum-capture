@@ -67,6 +67,7 @@ def _viewer() -> str | None:
 
 
 SNAPSHOT_ROOT = "/media/dreame_vacuum_unlocked/snapshots"
+AUDIO_ROOT = "/media/dreame_vacuum_unlocked/audio"
 
 # How many snapshots the Tags page shows per tag before "view all" takes over.
 TAG_PREVIEW_COUNT = 20
@@ -1074,6 +1075,154 @@ def voice_page():
     )
 
 
+@app.route("/audio")
+def audio_page():
+    """Upload / manage the mp3 clips that can be mapped into the custom voice pack."""
+    return render_template(
+        "audio.html", base=_ingress_base(), viewer=_viewer(), page="audio"
+    )
+
+
+AUDIO_EXTS = (".mp3",)
+
+
+def _safe_audio_name(value: str) -> str:
+    """Keep the file name within the audio dir - never allow path traversal."""
+    name = os.path.basename((value or "").strip())
+    if not name or not name.lower().endswith(AUDIO_EXTS):
+        raise ValueError("Not an mp3 file name")
+    # strip anything that could be dangerous / weird
+    return "".join(c if (c.isalnum() or c in " ._-") else "_" for c in name)
+
+
+@app.route("/api/audio")
+def api_audio():
+    """List the uploaded mp3 clips."""
+    try:
+        if not os.path.isdir(AUDIO_ROOT):
+            os.makedirs(AUDIO_ROOT, exist_ok=True)
+        files = sorted(
+            n for n in os.listdir(AUDIO_ROOT)
+            if n.lower().endswith(AUDIO_EXTS) and os.path.isfile(
+                os.path.join(AUDIO_ROOT, n)
+            )
+        )
+    except Exception as err:  # noqa: BLE001
+        return jsonify({"files": [], "error": str(err)}), 500
+    return jsonify({"files": files})
+
+
+@app.route("/api/audio/upload", methods=["POST"])
+def api_audio_upload():
+    """Accept an uploaded mp3 and save it under the audio dir."""
+    try:
+        os.makedirs(AUDIO_ROOT, exist_ok=True)
+    except OSError:
+        pass
+    upload = request.files.get("file") or request.files.get("audio")
+    if upload is None or not upload.filename:
+        return jsonify({"ok": False, "error": "An mp3 file is required"}), 400
+    try:
+        name = _safe_audio_name(upload.filename)
+    except ValueError as err:
+        return jsonify({"ok": False, "error": str(err)}), 400
+    dest = os.path.join(AUDIO_ROOT, name)
+    if os.path.abspath(dest).startswith(os.path.abspath(AUDIO_ROOT)):
+        upload.save(dest)
+    else:
+        return jsonify({"ok": False, "error": "Invalid file name"}), 400
+    return jsonify({"ok": True, "name": name})
+
+
+@app.route("/api/audio/<name>")
+def api_audio_file(name):
+    """Serve an uploaded clip so the UI can play it."""
+    try:
+        safe = _safe_audio_name(name)
+    except ValueError:
+        abort(404)
+    path = os.path.join(AUDIO_ROOT, safe)
+    if not os.path.isfile(path):
+        abort(404)
+    return send_file(path, mimetype="audio/mpeg")
+
+
+@app.route("/api/audio/<name>", methods=["DELETE"])
+def api_audio_delete(name):
+    try:
+        safe = _safe_audio_name(name)
+    except ValueError:
+        return jsonify({"ok": False, "error": "Invalid file name"}), 400
+    path = os.path.join(AUDIO_ROOT, safe)
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except OSError as err:
+        return jsonify({"ok": False, "error": str(err)}), 500
+    return jsonify({"ok": True, "name": safe})
+
+
+def _build_voice_pack(selections: dict) -> str | None:
+    """Convert each selected mp3 to <tts-id>.ogg (Ogg Vorbis, 16k mono, libvorbis)
+    and assemble them into a flat gzip-tar at AUDIO_ROOT/upload.tar.gz.
+
+    `selections` maps a tts id -> the uploaded mp3 file name to use for it.
+    Returns the pack path, or None if there was nothing to build.
+    """
+    import subprocess
+    import tarfile
+    import gzip
+
+    try:
+        os.makedirs(AUDIO_ROOT, exist_ok=True)
+        build_dir = os.path.join(AUDIO_ROOT, "build")
+        os.makedirs(build_dir, exist_ok=True)
+    except OSError:
+        return None
+
+    oggs = []
+    for tts_id, fname in (selections or {}).items():
+        try:
+            safe = _safe_audio_name(str(fname or ""))
+        except ValueError:
+            continue
+        src = os.path.join(AUDIO_ROOT, safe)
+        if not os.path.isfile(src):
+            continue
+        out = os.path.join(build_dir, f"{_safe_tag(str(tts_id))}.ogg")
+        try:
+            res = subprocess.run(
+                ["ffmpeg", "-y", "-v", "error", "-i", src,
+                 "-ac", "1", "-ar", "16000", "-c:a", "libvorbis", "-q:a", "4", out],
+                capture_output=True, timeout=120,
+            )
+        except Exception:  # noqa: BLE001 - skip on any failure
+            continue
+        if res.returncode == 0 and os.path.isfile(out):
+            oggs.append(out)
+    if not oggs:
+        return None
+
+    pack_path = os.path.join(AUDIO_ROOT, "upload.tar.gz")
+    tmp_tar = os.path.join(build_dir, "pack.tar")
+    try:
+        with tarfile.open(tmp_tar, "w") as tar:
+            for o in sorted(oggs):
+                tar.add(o, arcname=os.path.basename(o))  # flat, no "./"
+        with gzip.open(pack_path, "wb") as gz:
+            with open(tmp_tar, "rb") as tf:
+                gz.write(tf.read())
+        return pack_path
+    except Exception:  # noqa: BLE001
+        return None
+    finally:
+        try:
+            if os.path.exists(tmp_tar):
+                os.remove(tmp_tar)
+        except OSError:
+            pass
+
+
 VOICE_MAPPINGS_FILE = os.path.join(os.path.dirname(__file__), "voice_mappings.json")
 
 
@@ -1132,16 +1281,15 @@ def _pack_checksum(pack_url: str) -> tuple[str, int]:
 
 @app.route("/api/voice/apply", methods=["POST"])
 def api_voice_apply():
-    """Apply the custom voice selection.
+    """Build the custom voice pack from the selections and install it.
 
-    Tells the vacuum to download + install the custom voice pack (id 'CU') by
-    calling the integration's `set_custom_voice` service with the pack URL. The
-    pack is hosted at Home Assistant's config/www/dreame_vacuum_unlocked/
-    audio/upload.tar.gz (served at /local/), a gzip-tar of the numbered .ogg slots
-    that the integration places there (empty for now).
+    1. Converts each selected mp3 to <tts-id>.ogg and assembles a flat gzip-tar
+       at audio_root/upload.tar.gz (served to the integration at /api/audio/pack).
+    2. Calls the integration's `set_custom_voice` service with the /local pack
+       URL + md5/size; the integration places the built pack under config/www
+       and writes PropSetVoice so the vacuum downloads + installs it.
 
-    Body: {did?, url?, base_url?, selections?}. `url` (or base_url, from which we
-    build the /local URL) is what the robot must be able to reach over the internet.
+    Body: {did?, url?, base_url?, selections?}. `selections` maps {tts_id: mp3}.
     """
     body = request.get_json(silent=True) or {}
     pack_url = (body.get("url") or "").strip()
@@ -1159,12 +1307,20 @@ def api_voice_apply():
             "error": "No vacuum entity registered with this add-on yet (devices not registered)",
         }), 409
 
+    # Build the pack from the user's clip selections first.
+    built = _build_voice_pack(body.get("selections") or {})
     md5, size = _pack_checksum(pack_url)
+    if built:
+        import hashlib as _hl
+        with open(built, "rb") as fh:
+            data = fh.read()
+        md5, size = _hl.md5(data).hexdigest(), len(data)
+
     ok, detail = ha_client.call_service_result(
         "dreame_vacuum_unlocked_integration",
         "set_custom_voice",
         {"entity_id": entity, "url": pack_url, "md5": md5, "size": size},
-        timeout=60,
+        timeout=90,
     )
     return jsonify({
         "ok": ok,
@@ -1173,6 +1329,7 @@ def api_voice_apply():
         "url": pack_url,
         "md5": md5,
         "size": size,
+        "pack_built": bool(built),
         "selections": body.get("selections", {}),
     })
 

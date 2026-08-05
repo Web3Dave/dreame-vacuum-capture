@@ -80,6 +80,7 @@
       </button>
       <div class="settings-dropdown" id="settings-dropdown" hidden>
         <a href="{{ base }}/config">Config</a>
+        <a href="{{ base }}/audio">Audio</a>
         <a href="{{ base }}/voice" aria-current="true">Custom voice</a>
       </div>
     </div>
@@ -108,14 +109,18 @@
     const $ = (id) => document.getElementById(id);
 
     let MAPPINGS = [];   // [{id, name}] from /api/voice/mappings
+    let AUDIO_FILES = []; // uploaded mp3 clip names from /api/audio
 
     function renderRows() {
       const wrap = $("rows");
+      const audioOpts = AUDIO_FILES.map((f) =>
+        `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join("");
       wrap.innerHTML = MAPPINGS.map((m) => {
         return `<div class="row">
           <div class="name"><b>${escapeHtml(m.name)}</b><span class="id">tts id: ${escapeHtml(m.id)}</span></div>
           <select class="audio" data-id="${escapeHtml(m.id)}">
             <option value="">No audio</option>
+            ${audioOpts}
           </select>
         </div>`;
       }).join("");
@@ -123,11 +128,16 @@
 
     async function loadMappings() {
       try {
-        const res = await fetch(`${BASE}/api/voice/mappings`);
-        const body = await res.json().catch(() => ({}));
-        MAPPINGS = body.mappings || [];
+        const [mapsRes, audioRes] = await Promise.all([
+          fetch(`${BASE}/api/voice/mappings`),
+          fetch(`${BASE}/api/audio`),
+        ]);
+        const maps = await mapsRes.json().catch(() => ({}));
+        const audio = await audioRes.json().catch(() => ({}));
+        MAPPINGS = maps.mappings || [];
+        AUDIO_FILES = audio.files || [];
         if (!MAPPINGS.length) {
-          $("rows").innerHTML = `<div class="hint">${escapeHtml(body.error || "No sound list available")}</div>`;
+          $("rows").innerHTML = `<div class="hint">${escapeHtml(maps.error || "No sound list available")}</div>`;
           return;
         }
         renderRows();

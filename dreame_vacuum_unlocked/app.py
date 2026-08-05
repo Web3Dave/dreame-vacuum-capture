@@ -60,6 +60,7 @@ from dreame_sign import sign_params
 
 OPTIONS_PATH = "/data/options.json"
 MEDIA_ROOT = "/media/dreame_vacuum_unlocked"
+AUDIO_ROOT = os.path.join(MEDIA_ROOT, "audio")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
 P2P_SPEAK_BINARY = os.path.join(SCRIPT_DIR, "p2p_speak")
@@ -106,6 +107,7 @@ PIID_STREAM_VIDEO_TRIGGER = 1
 
 app = Flask(__name__)
 os.makedirs(MEDIA_ROOT, exist_ok=True)
+os.makedirs(AUDIO_ROOT, exist_ok=True)
 
 # did -> {"p2p_proc": Popen, "ffmpeg_proc": Popen, "live_url": str}
 _active_streams = {}
@@ -941,6 +943,21 @@ def latest():
     if not os.path.exists(path):
         abort(404, "No snapshot has been captured yet for this device")
     return send_file(path, mimetype="image/jpeg")
+
+
+@app.route("/api/audio/pack", methods=["GET"])
+def audio_pack():
+    """Serve the built custom voice pack (upload.tar.gz) to the integration,
+    which places it under Home Assistant's config/www so the vacuum can fetch it.
+
+    The add-on (which owns ffmpeg + the audio files) builds the pack on Apply;
+    the integration pulls it from here and writes it to the /local URL the
+    robot downloads.
+    """
+    path = os.path.join(AUDIO_ROOT, "upload.tar.gz")
+    if not os.path.exists(path):
+        abort(404, "No voice pack built yet")
+    return send_file(path, mimetype="application/gzip")
 
 
 @app.route("/register", methods=["POST"])
