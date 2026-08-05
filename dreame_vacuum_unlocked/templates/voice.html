@@ -158,7 +158,7 @@
           selections[sel.dataset.id] = sel.value;
         });
         // Point the vacuum at the pack under HA's www (config/www/dreame_vacuum_unlocked/audio).
-        const packUrl = `${location.origin}/local/dreame_vacuum_unlocked/audio/upload.zip`;
+        const packUrl = `${location.origin}/local/dreame_vacuum_unlocked/audio/upload.tar.gz`;
         const res = await fetch(`${BASE}/api/voice/apply`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },

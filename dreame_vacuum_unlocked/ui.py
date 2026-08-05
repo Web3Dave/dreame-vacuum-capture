@@ -1136,8 +1136,9 @@ def api_voice_apply():
 
     Tells the vacuum to download + install the custom voice pack (id 'CU') by
     calling the integration's `set_custom_voice` service with the pack URL. The
-    pack is expected at Home Assistant's config/www/dreame_vacuum_unlocked/
-    audio/upload (served at /local/), a gzip-tar of the numbered .ogg slots.
+    pack is hosted at Home Assistant's config/www/dreame_vacuum_unlocked/
+    audio/upload.tar.gz (served at /local/), a gzip-tar of the numbered .ogg slots
+    that the integration places there (empty for now).
 
     Body: {did?, url?, base_url?, selections?}. `url` (or base_url, from which we
     build the /local URL) is what the robot must be able to reach over the internet.
@@ -1147,7 +1148,7 @@ def api_voice_apply():
     if not pack_url:
         base = (body.get("base_url") or "").strip().rstrip("/")
         if base:
-            pack_url = f"{base}/local/dreame_vacuum_unlocked/audio/upload.zip"
+            pack_url = f"{base}/local/dreame_vacuum_unlocked/audio/upload.tar.gz"
     if not pack_url:
         return jsonify({"ok": False, "error": "url or base_url is required"}), 400
 
