@@ -54,6 +54,7 @@ COPY requirements.txt .
 RUN pip3 install --no-cache-dir -r requirements.txt
 
 COPY --from=builder /build/build/p2p_sample ./p2p_sample
+COPY --from=builder /build/build/p2p_speak ./p2p_speak
 COPY dreame_lib/ dreame_lib/
 COPY dreame_sign.py .
 COPY app.py .

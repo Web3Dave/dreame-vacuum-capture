@@ -61,6 +61,7 @@ OPTIONS_PATH = "/data/options.json"
 MEDIA_ROOT = "/media/dreame-capture"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
+P2P_SPEAK_BINARY = os.path.join(SCRIPT_DIR, "p2p_speak")
 RTSP_HOST_PORT = 8554
 MEDIAMTX_API = "http://127.0.0.1:9997"
 STALL_THRESHOLD_SECONDS = 15
@@ -364,6 +365,62 @@ def _safe_disconnect(protocol):
         protocol.disconnect()
     except Exception:
         app.logger.warning("Failed to cleanly disconnect protocol/MQTT session", exc_info=True)
+
+
+@app.route("/speak", methods=["POST"])
+def speak():
+    """Stream raw audio bytes to the vacuum's speaker over the XP2P
+    talk-back (voice intercom) channel.
+
+    Request: JSON {username, password, country?, four_digit_code, did} with
+    the raw audio (in whatever codec the device's speaker expects) as the
+    request body. The caller transcodes the mp3 -> codec -> raw bytes first.
+
+    Wires up the same login -> identity -> PIN camera session -> p2p_info
+    chain the live camera uses, then hands the audio to the `p2p_speak`
+    binary which opens the SDK's send-voice service and pushes the bytes.
+    """
+    body = _require_body("username", "password", "four_digit_code", "did")
+    did = body["did"]
+    audio = request.get_data()
+    if not audio:
+        abort(400, "Empty audio body")
+
+    protocol = login(body["username"], body["password"], body.get("country", "eu"))
+    try:
+        connect_device(protocol, did)
+        product_id, device_name = get_identity(protocol, did)
+        start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
+        p2p_info = get_p2p_info(protocol, did)
+    except Exception:
+        _safe_disconnect(protocol)
+        raise
+
+    config_path = write_p2p_config(did, product_id, device_name)
+    raw_path = f"/tmp/speak_{did}.raw"
+    with open(raw_path, "wb") as fh:
+        fh.write(audio)
+
+    env = dict(os.environ)
+    env["XP2P_INFO"] = p2p_info
+    timeout = 120
+    try:
+        result = subprocess.run(
+            [P2P_SPEAK_BINARY, config_path, raw_path, "0", "0"],
+            env=env, capture_output=True, text=True, timeout=timeout,
+        )
+        output = (result.stdout or "") + (result.stderr or "")
+        app.logger.info("/speak returncode=%s audio_bytes=%d", result.returncode, len(audio))
+        return jsonify({
+            "success": result.returncode == 0,
+            "returncode": result.returncode,
+            "audio_bytes": len(audio),
+            "output": output[-4000:],
+        })
+    except subprocess.TimeoutExpired:
+        return jsonify({"success": False, "error": f"p2p_speak timed out after {timeout}s"})
+    finally:
+        _safe_disconnect(protocol)
 
 
 @app.route("/devices", methods=["POST"])
