@@ -1,0 +1,192 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Custom Voice - Dreame Companion</title>
+  <style>
+    :root {
+      --bg: #f6f7f9; --card: #fff; --line: #e3e6ea;
+      --text: #1c1e21; --muted: #6b7280; --accent: #03a9f4; --ok: #2e7d32; --bad: #c62828;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root { --bg:#111418; --card:#1b1f24; --line:#2b3138; --text:#e8eaed; --muted:#9aa4b2; }
+    }
+    * { box-sizing: border-box; }
+    body { margin:0; padding:24px 12px; background:var(--bg); color:var(--text);
+           font:15px/1.5 -apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,sans-serif;
+           overflow-x:hidden; }
+    header { display:flex; align-items:baseline; gap:12px; flex-wrap:wrap; margin-bottom:20px; }
+    h1 { font-size:20px; margin:0; font-weight:600; }
+    .sub { color:var(--muted); font-size:13px; }
+    nav { display:flex; gap:4px; margin:0 0 20px; border-bottom:1px solid var(--line);
+          width:100%; max-width:100vw; overflow-x:auto; flex-wrap:nowrap;
+          -webkit-overflow-scrolling:touch; scrollbar-width:none; -ms-overflow-style:none; }
+    nav::-webkit-scrollbar { display:none; }
+    nav a { flex:0 0 auto; padding:8px 14px; white-space:nowrap; text-decoration:none; color:var(--muted); font-size:14px;
+            border-bottom:2px solid transparent; margin-bottom:-1px; }
+    nav a:hover { color:var(--text); }
+    nav a[aria-current="page"] { color:var(--text); border-bottom-color:var(--accent); font-weight:600; }
+    .settings-menu { margin-left:auto; position:relative; display:flex; align-items:center; }
+    .settings-btn { border:none; background:transparent; color:var(--muted); cursor:pointer;
+                    padding:6px; border-radius:8px; display:flex; align-items:center; justify-content:center; }
+    .settings-btn:hover { color:var(--text); background:rgba(127,127,127,.12); }
+    .settings-btn svg { width:19px; height:19px; fill:none; stroke:currentColor;
+                        stroke-width:1.8; stroke-linecap:round; stroke-linejoin:round; }
+    .settings-dropdown { position:absolute; top:calc(100% + 6px); right:0; background:var(--card);
+                         border:1px solid var(--line); border-radius:8px;
+                         box-shadow:0 6px 20px rgba(0,0,0,.18); min-width:200px; padding:4px; z-index:30; }
+    .settings-dropdown a { display:block; padding:8px 10px; font-size:13.5px; color:var(--text);
+                           text-decoration:none; border-radius:6px; }
+    .settings-dropdown a:hover { background:rgba(127,127,127,.12); }
+
+    .field { margin-bottom:16px; }
+    .field label { display:block; font-size:13px; color:var(--muted); margin-bottom:6px; }
+    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:8px;
+             border:1px solid var(--line); background:var(--card); color:var(--text); min-width:180px; }
+    .card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:18px; margin-bottom:16px; }
+    .row { display:flex; align-items:center; gap:12px; padding:10px 0; border-bottom:1px solid var(--line); }
+    .row:last-child { border-bottom:none; }
+    .row .name { flex:1; }
+    .row .name b { display:block; font-size:14px; }
+    .row .name .id { color:var(--muted); font-size:12.5px; }
+    .hint { color:var(--muted); font-size:13px; }
+    .status { margin-top:14px; padding:10px 14px; border-radius:8px; font-size:13.5px;
+              white-space:pre-line; }
+    .status.ok { background:rgba(46,125,50,.12); color:var(--ok); }
+    .status.err { background:rgba(198,40,40,.1); color:var(--bad); }
+    button.primary { font:inherit; font-size:15px; padding:10px 22px; border-radius:8px; cursor:pointer;
+                     background:var(--accent); border:1px solid var(--accent); color:#fff; font-weight:600; }
+    button.primary:hover { filter:brightness(1.06); }
+    button.primary[disabled] { opacity:.55; cursor:not-allowed; }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>Dreame Companion</h1>
+    <span class="sub">Custom voice</span>
+  </header>
+  <nav>
+    <a href="{{ base }}/">Devices</a>
+    <a href="{{ base }}/tasks">Tasks</a>
+    <a href="{{ base }}/tags">Tags</a>
+    <a href="{{ base }}/classifications">Classifications</a>
+    <a href="{{ base }}/cleaning">Cleaning</a>
+    <a href="{{ base }}/maps">Maps</a>
+    <a href="{{ base }}/activity">Activity</a>
+      <div class="settings-menu">
+      <button type="button" class="settings-btn" id="settings-btn" aria-haspopup="true" aria-expanded="false" title="Settings">
+        <svg viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 0 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 0 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 0 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 0 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+      </button>
+      <div class="settings-dropdown" id="settings-dropdown" hidden>
+        <a href="{{ base }}/config">Config</a>
+        <a href="{{ base }}/voice" aria-current="true">Custom voice</a>
+      </div>
+    </div>
+  </nav>
+
+  <div class="field">
+    <label for="pack">Voice pack</label>
+    <select id="pack">
+      <option value="custom">Custom</option>
+    </select>
+  </div>
+
+  <div class="card">
+    <div id="rows"></div>
+  </div>
+
+  <div style="display:flex; gap:10px; align-items:center; margin-top:14px;">
+    <button type="button" class="primary" id="apply">Apply</button>
+    <span class="hint">Upload your audio to config/www/dreame_vacuum_unlocked/audio before applying.</span>
+  </div>
+
+  <div id="status" class="status" hidden></div>
+
+  <script>
+    const BASE = "{{ base }}";
+    const $ = (id) => document.getElementById(id);
+
+    // Placeholder mapping: tts id -> spoken phrase. Populate with your pack's
+    // tts.json entries (or the full list from the official soundpackage).
+    const MAPPINGS = [
+      { id: "45", name: "OK, I\u2019ll end the task. Please stay there so I can find you." },
+      { id: "0", name: "Startup / boot" },
+      { id: "1", name: "Charging start" }
+    ];
+
+    function renderRows() {
+      const wrap = $("rows");
+      wrap.innerHTML = MAPPINGS.map((m) => {
+        return `<div class="row">
+          <div class="name"><b>${escapeHtml(m.name)}</b><span class="id">tts id: ${escapeHtml(m.id)}</span></div>
+          <select class="audio" data-id="${escapeHtml(m.id)}">
+            <option value="">No audio</option>
+          </select>
+        </div>`;
+      }).join("");
+    }
+
+    function escapeHtml(s) {
+      return String(s).replace(/[&<>"']/g, (c) =>
+        ({ "&":"&amp;", "<":"&lt;", ">":"&gt;", '"':"&quot;", "'":"&#39;" }[c]));
+    }
+
+    function setStatus(ok, msg) {
+      const st = $("status");
+      st.hidden = false;
+      st.className = "status " + (ok ? "ok" : "err");
+      st.textContent = msg;
+    }
+
+    $("apply").addEventListener("click", async () => {
+      const btn = $("apply");
+      btn.disabled = true;
+      setStatus(true, "Applying\u2026");
+      try {
+        const selections = {};
+        document.querySelectorAll(".audio").forEach((sel) => {
+          selections[sel.dataset.id] = sel.value;
+        });
+        // Point the vacuum at the pack under HA's www (config/www/dreame_vacuum_unlocked/audio).
+        const packUrl = `${location.origin}/local/dreame_vacuum_unlocked/audio/upload.zip`;
+        const res = await fetch(`${BASE}/api/voice/apply`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ url: packUrl, selections })
+        });
+        const body = await res.json().catch(() => ({}));
+        if (body.ok) {
+          setStatus(true, `Applied. Sent vacuum the pack URL.\n${body.url}\nmd5=${body.md5} size=${body.size}`);
+        } else {
+          setStatus(false, `Failed: ${body.detail || body.error || (res.status + " " + res.statusText)}`);
+        }
+      } catch (e) {
+        setStatus(false, "Error: " + (e && e.message ? e.message : e));
+      } finally {
+        btn.disabled = false;
+      }
+    });
+
+    (function () {
+      const btn = $("settings-btn");
+      const menu = $("settings-dropdown");
+      if (!btn || !menu) return;
+      btn.addEventListener("click", (e) => {
+        e.stopPropagation();
+        const opening = menu.hidden;
+        menu.hidden = !opening;
+        btn.setAttribute("aria-expanded", String(opening));
+      });
+      document.addEventListener("click", (e) => {
+        if (!menu.hidden && !menu.contains(e.target) && e.target !== btn) {
+          menu.hidden = true;
+          btn.setAttribute("aria-expanded", "false");
+        }
+      });
+    })();
+
+    renderRows();
+  </script>
+</body>
+</html>

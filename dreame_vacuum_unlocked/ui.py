@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
+import hashlib
 import os
 import shutil
 import time
@@ -1063,6 +1064,85 @@ def api_config_save():
     except config_store.ConfigError as err:
         return jsonify({"error": str(err)}), 400
     return jsonify({"success": True})
+
+
+@app.route("/voice")
+def voice_page():
+    """Custom voice pack editor: pick which phrase slots your own audio maps to."""
+    return render_template(
+        "voice.html", base=_ingress_base(), viewer=_viewer(), page="voice"
+    )
+
+
+def _pack_checksum(pack_url: str) -> tuple[str, int]:
+    """Best-effort md5 + byte size of the pack at pack_url.
+
+    The vacuum needs both (md5 + size) in PropSetVoice to install a pack, and
+    they must match the file the robot actually downloads. We try to read it
+    via Home Assistant's /local/ web root (config/www) through the supervisor
+    proxy; on any failure we return empty/0 so the trigger still fires (the
+    caller can supply a real url/md5/size later).
+    """
+    md5 = ""
+    size = 0
+    try:
+        import requests as _req
+
+        rel = ""
+        if "/local/" in pack_url:
+            rel = pack_url.split("/local/", 1)[1].lstrip("/")
+        if not rel:
+            return md5, size
+        # The supervisor proxies HA's web root at http://supervisor/core/.
+        probe = _req.get(
+            ha_client.SUPERVISOR_CORE.replace("/api", "") + "/local/" + rel,
+            headers=ha_client._headers(),
+            timeout=10,
+        )
+        if probe.status_code == 200 and probe.content:
+            md5 = hashlib.md5(probe.content).hexdigest()
+            size = len(probe.content)
+    except Exception:  # noqa: BLE001 - checksum is best-effort
+        pass
+    return md5, size
+
+
+@app.route("/api/voice/apply", methods=["POST"])
+def api_voice_apply():
+    """Apply the custom voice selection.
+
+    Tells the vacuum to download + install the custom voice pack (id 'CU') by
+    calling the integration's `set_custom_voice` service with the pack URL. The
+    pack is expected at Home Assistant's config/www/dreame_vacuum_unlocked/
+    audio/upload (served at /local/), a gzip-tar of the numbered .ogg slots.
+
+    Body: {url, base_url?, selections?}. `url` (or base_url, from which we build
+    the /local URL) is what the robot must be able to reach over the internet.
+    """
+    body = request.get_json(silent=True) or {}
+    pack_url = (body.get("url") or "").strip()
+    if not pack_url:
+        base = (body.get("base_url") or "").strip().rstrip("/")
+        if base:
+            pack_url = f"{base}/local/dreame_vacuum_unlocked/audio/upload.zip"
+    if not pack_url:
+        return jsonify({"ok": False, "error": "url or base_url is required"}), 400
+
+    md5, size = _pack_checksum(pack_url)
+    ok, detail = ha_client.call_service_result(
+        "dreame_vacuum_unlocked_integration",
+        "set_custom_voice",
+        {"url": pack_url, "md5": md5, "size": size},
+        timeout=60,
+    )
+    return jsonify({
+        "ok": ok,
+        "detail": detail,
+        "url": pack_url,
+        "md5": md5,
+        "size": size,
+        "selections": body.get("selections", {}),
+    })
 
 
 if __name__ == "__main__":
