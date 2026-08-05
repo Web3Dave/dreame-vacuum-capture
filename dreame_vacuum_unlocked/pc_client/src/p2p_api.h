@@ -34,6 +34,13 @@ const char *QcloudRequestPlaybackUrl(void *handle, const char *StreamType, int c
 
 const int QcloudSendVoice(void *handle, int channel, bool crypto, uint8_t *data, size_t len);
 
+/* Send voice/custom data over the send-service opened with an explicit `cmd`
+ * params string (e.g. "action=voice" per the Tencent XP2P SDK docs, which is
+ * how the SDK knows to route the stream to the speaker's voice-decode path).
+ * Calling with data==NULL closes the send service. */
+const int QcloudSendVoiceCommand(void *handle, const char *cmd, bool crypto,
+                                 uint8_t *data, size_t len);
+
 const int QcloudPostCommandRequest(void *handle, const unsigned char *command, size_t cmd_len,
                            unsigned char *recv_buf, uint64_t timeout_us);
 

@@ -68,11 +68,11 @@ static void parse_config(const char *file)
 int main(int argc, char **argv)
 {
     if (argc < 3) {
-        fprintf(stderr, "Usage: XP2P_INFO=.. %s <config.txt> <raw_audio.bin> [channel] [crypto]\n", argv[0]);
+        fprintf(stderr, "Usage: XP2P_INFO=.. %s <config.txt> <raw_audio.bin> [cmd] [crypto]\n", argv[0]);
         return 1;
     }
-    int channel = argc > 3 ? atoi(argv[3]) : 0;
-    bool crypto  = argc > 4 ? (atoi(argv[4]) != 0) : false;
+    const char *cmd    = argc > 3 ? argv[3] : "action=voice";
+    bool crypto        = argc > 4 ? (atoi(argv[4]) != 0) : false;
 
     parse_config(argv[1]);
 
@@ -118,7 +118,7 @@ int main(int argc, char **argv)
     size_t n, total = 0;
     int rc;
     while ((n = fread(chunk, 1, sizeof(chunk), fp)) > 0) {
-        rc = QcloudSendVoice(handle, channel, crypto, chunk, n);
+        rc = QcloudSendVoiceCommand(handle, cmd, crypto, chunk, n);
         if (rc != 0) {
             fprintf(stderr, "dataSend rc=%d at %zu bytes\n", rc, total);
             break;
@@ -132,7 +132,7 @@ int main(int argc, char **argv)
     fprintf(stderr, "done, total %zu bytes; closing send service\n", total);
 
     /* data==NULL, len==0 closes the send service */
-    QcloudSendVoice(handle, channel, crypto, NULL, 0);
+    QcloudSendVoiceCommand(handle, cmd, crypto, NULL, 0);
     __SYS_SLEEP_MS(300);
     stopService(sg_device_name);
     return 0;

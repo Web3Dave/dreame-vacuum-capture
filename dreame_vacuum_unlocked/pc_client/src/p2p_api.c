@@ -357,6 +357,30 @@ const int QcloudSendVoice(void *handle, int channel, bool crypto, uint8_t *data,
 }
 
 
+const int QcloudSendVoiceCommand(void *handle, const char *cmd, bool crypto, uint8_t *data, size_t len)
+{
+    P2pApiHandle *pHandle = (P2pApiHandle *)handle;
+    int rc                = 0;
+
+    if (!pHandle) {
+        return XP2P_ERR_CLIENT_NULL;
+    }
+    if (!pHandle->isSendService) {
+        runSendService(pHandle->id, cmd, crypto);
+        pHandle->isSendService = 1;
+    }
+
+    if (data && len) {
+        rc = dataSend(pHandle->id, data, len);
+    } else {
+        rc = stopSendService(pHandle->id, NULL);
+        pHandle->isSendService = 0;
+    }
+
+    return rc;
+}
+
+
 const int QcloudPostCommandRequest(void *handle, const unsigned char *command, size_t cmd_len,
                            unsigned char *recv_buf, uint64_t timeout_us)
 {
