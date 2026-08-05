@@ -64,6 +64,7 @@ AUDIO_ROOT = os.path.join(MEDIA_ROOT, "audio")
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
 P2P_SPEAK_BINARY = os.path.join(SCRIPT_DIR, "p2p_speak")
+P2P_INTERCOM_BINARY = os.path.join(SCRIPT_DIR, "p2p_intercom")
 RTSP_HOST_PORT = 8554
 MEDIAMTX_API = "http://127.0.0.1:9997"
 STALL_THRESHOLD_SECONDS = 15
@@ -419,7 +420,7 @@ def speak():
     timeout = 120
     try:
         result = subprocess.run(
-            [P2P_SPEAK_BINARY, config_path, raw_path, "0", "0"],
+            [P2P_INTERCOM_BINARY, config_path, raw_path, "0", "0"],
             env=env, capture_output=True, text=True, timeout=timeout,
         )
         output = (result.stdout or "") + (result.stderr or "")
