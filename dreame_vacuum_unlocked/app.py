@@ -395,6 +395,13 @@ def speak():
         connect_device(protocol, did)
         product_id, device_name = get_identity(protocol, did)
         start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
+        # Enter intercom mode on the device - this is what arms the speaker for
+        # talk-back. The device ignores the AudioStream send-service on the XP2P
+        # channel until it has been put into intercom mode (Monitor VOICE_OPERATE
+        # aiid 2 / PropMonitorAudioStatus piid 2) on this same active session.
+        start_voice = camera_action(protocol, did, 2, 2,
+                                    {"operType": "intercom", "operation": "start"})
+        app.logger.info("/speak VOICE_OPERATE start -> %s", start_voice)
         p2p_info = get_p2p_info(protocol, did)
     except Exception:
         _safe_disconnect(protocol)
@@ -424,6 +431,11 @@ def speak():
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": f"p2p_speak timed out after {timeout}s"})
     finally:
+        # Leave intercom mode.
+        try:
+            camera_action(protocol, did, 2, 2, {"operType": "intercom", "operation": "end"})
+        except Exception:
+            app.logger.warning("/speak VOICE_OPERATE end failed", exc_info=True)
         _safe_disconnect(protocol)
 
 
