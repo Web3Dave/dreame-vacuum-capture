@@ -107,13 +107,7 @@
     const BASE = "{{ base }}";
     const $ = (id) => document.getElementById(id);
 
-    // Placeholder mapping: tts id -> spoken phrase. Populate with your pack's
-    // tts.json entries (or the full list from the official soundpackage).
-    const MAPPINGS = [
-      { id: "45", name: "OK, I\u2019ll end the task. Please stay there so I can find you." },
-      { id: "0", name: "Startup / boot" },
-      { id: "1", name: "Charging start" }
-    ];
+    let MAPPINGS = [];   // [{id, name}] from /api/voice/mappings
 
     function renderRows() {
       const wrap = $("rows");
@@ -125,6 +119,21 @@
           </select>
         </div>`;
       }).join("");
+    }
+
+    async function loadMappings() {
+      try {
+        const res = await fetch(`${BASE}/api/voice/mappings`);
+        const body = await res.json().catch(() => ({}));
+        MAPPINGS = body.mappings || [];
+        if (!MAPPINGS.length) {
+          $("rows").innerHTML = `<div class="hint">${escapeHtml(body.error || "No sound list available")}</div>`;
+          return;
+        }
+        renderRows();
+      } catch (e) {
+        $("rows").innerHTML = `<div class="hint">Could not load sound list: ${escapeHtml(e.message || e)}</div>`;
+      }
     }
 
     function escapeHtml(s) {
@@ -186,7 +195,7 @@
       });
     })();
 
-    renderRows();
+    loadMappings();
   </script>
 </body>
 </html>

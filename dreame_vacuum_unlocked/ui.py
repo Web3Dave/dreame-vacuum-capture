@@ -1074,6 +1074,29 @@ def voice_page():
     )
 
 
+VOICE_MAPPINGS_FILE = os.path.join(os.path.dirname(__file__), "voice_mappings.json")
+
+
+@app.route("/api/voice/mappings")
+def api_voice_mappings():
+    """The full list of sound slots (tts id + phrase) from the r2579h EN pack's
+    tts.json, so the voice page lists every sound we can override."""
+    try:
+        with open(VOICE_MAPPINGS_FILE, encoding="utf-8") as fh:
+            return jsonify({"mappings": json.load(fh)})
+    except Exception as err:  # noqa: BLE001 - surfaced to the UI
+        return jsonify({"mappings": [], "error": str(err)}), 500
+
+
+def _vacuum_entity(did: str | None = None) -> str | None:
+    """The vacuum entity_id registered with this add-on, for the chosen device
+    (or the first registered one). Integration entity services require it."""
+    dev = store.get_device(did) if did else (store.list_devices() or [None])[0]
+    if not dev:
+        return None
+    return (dev.get("entities") or {}).get("vacuum")
+
+
 def _pack_checksum(pack_url: str) -> tuple[str, int]:
     """Best-effort md5 + byte size of the pack at pack_url.
 
@@ -1116,8 +1139,8 @@ def api_voice_apply():
     pack is expected at Home Assistant's config/www/dreame_vacuum_unlocked/
     audio/upload (served at /local/), a gzip-tar of the numbered .ogg slots.
 
-    Body: {url, base_url?, selections?}. `url` (or base_url, from which we build
-    the /local URL) is what the robot must be able to reach over the internet.
+    Body: {did?, url?, base_url?, selections?}. `url` (or base_url, from which we
+    build the /local URL) is what the robot must be able to reach over the internet.
     """
     body = request.get_json(silent=True) or {}
     pack_url = (body.get("url") or "").strip()
@@ -1128,16 +1151,24 @@ def api_voice_apply():
     if not pack_url:
         return jsonify({"ok": False, "error": "url or base_url is required"}), 400
 
+    entity = _vacuum_entity(body.get("did"))
+    if not entity:
+        return jsonify({
+            "ok": False,
+            "error": "No vacuum entity registered with this add-on yet (devices not registered)",
+        }), 409
+
     md5, size = _pack_checksum(pack_url)
     ok, detail = ha_client.call_service_result(
         "dreame_vacuum_unlocked_integration",
         "set_custom_voice",
-        {"url": pack_url, "md5": md5, "size": size},
+        {"entity_id": entity, "url": pack_url, "md5": md5, "size": size},
         timeout=60,
     )
     return jsonify({
         "ok": ok,
         "detail": detail,
+        "entity_id": entity,
         "url": pack_url,
         "md5": md5,
         "size": size,
