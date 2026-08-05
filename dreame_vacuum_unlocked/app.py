@@ -46,6 +46,7 @@ import sys
 import threading
 import time
 import uuid
+import base64
 
 import requests
 from flask import Flask, jsonify, send_file, abort, request
@@ -380,9 +381,12 @@ def speak():
     chain the live camera uses, then hands the audio to the `p2p_speak`
     binary which opens the SDK's send-voice service and pushes the bytes.
     """
-    body = _require_body("username", "password", "four_digit_code", "did")
+    body = _require_body("username", "password", "four_digit_code", "did", "audio")
     did = body["did"]
-    audio = request.get_data()
+    try:
+        audio = base64.b64decode(body["audio"])
+    except Exception:
+        abort(400, "audio field must be base64")
     if not audio:
         abort(400, "Empty audio body")
 
