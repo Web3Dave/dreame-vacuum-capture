@@ -23,13 +23,13 @@ from PIL import Image
 
 import config_store
 
-DATASET_ROOT = "/media/dreame-capture/classify"
+DATASET_ROOT = "/media/dreame_vacuum_unlocked/classify"
 # Every classifier's latest read on a given snapshot, keyed by tag then
 # filename - one small file per snapshot rather than one per (classifier,
 # snapshot), since "what did every linked classifier make of this photo" is
 # how results are actually looked at (the tag detail page's View
 # classifications modal), not one classifier at a time.
-RESULTS_ROOT = "/media/dreame-capture/classify/results"
+RESULTS_ROOT = "/media/dreame_vacuum_unlocked/classify/results"
 
 # Guards the read-modify-write below: several classifiers can finish
 # classifying the same snapshot within milliseconds of each other (a rerun

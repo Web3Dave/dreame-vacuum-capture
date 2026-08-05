@@ -35,7 +35,7 @@ request it:
    reimplementation) to negotiate the P2P/relay connection and expose a local FLV feed
 
 From there, depending on the endpoint called:
-- **`/capture`** grabs one frame via `ffmpeg`, saves it under `/media/dreame-capture/<did>/`,
+- **`/capture`** grabs one frame via `ffmpeg`, saves it under `/media/dreame_vacuum_unlocked/<did>/`,
   and tears the whole session down immediately.
 - **`/stream/start`** instead republishes that local feed as RTSP (via a bundled
   [MediaMTX](https://github.com/bluenviron/mediamtx) server) at

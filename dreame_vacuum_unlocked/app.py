@@ -13,7 +13,7 @@ POST /devices       {username, password, country}
 POST /capture       {username, password, country, four_digit_code, did,
                      tag?}
                     -> one-shot: activation sequence -> grab one JPEG frame
-                       -> /media/dreame-capture/snapshots/<tag>/<ts>.jpg
+                       -> /media/dreame_vacuum_unlocked/snapshots/<tag>/<ts>.jpg
                           plus latest.jpg in the same folder -> tear down
 POST /stream/start  {username, password, country, four_digit_code, did}
                     -> activation sequence -> keeps the P2P session alive,
@@ -59,7 +59,7 @@ from dreame_lib.protocol import DreameVacuumProtocol
 from dreame_sign import sign_params
 
 OPTIONS_PATH = "/data/options.json"
-MEDIA_ROOT = "/media/dreame-capture"
+MEDIA_ROOT = "/media/dreame_vacuum_unlocked"
 SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
 P2P_BINARY = os.path.join(SCRIPT_DIR, "p2p_sample")
 P2P_SPEAK_BINARY = os.path.join(SCRIPT_DIR, "p2p_speak")

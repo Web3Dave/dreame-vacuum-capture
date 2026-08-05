@@ -66,7 +66,7 @@ def _viewer() -> str | None:
     return request.headers.get("X-Remote-User-Display-Name")
 
 
-SNAPSHOT_ROOT = "/media/dreame-capture/snapshots"
+SNAPSHOT_ROOT = "/media/dreame_vacuum_unlocked/snapshots"
 
 # How many snapshots the Tags page shows per tag before "view all" takes over.
 TAG_PREVIEW_COUNT = 20
@@ -173,7 +173,7 @@ def api_service():
     return jsonify({"success": ok}), (200 if ok else 502)
 
 
-MAP_ROOT = "/media/dreame-capture/maps"
+MAP_ROOT = "/media/dreame_vacuum_unlocked/maps"
 
 
 @app.route("/api/map/<did>")
