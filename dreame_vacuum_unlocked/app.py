@@ -257,22 +257,43 @@ def _read_monitor_audio(protocol, did):
         return None
 
 
-def _wait_intercom(protocol, did, session, seconds=10):
-    """Poll 10001.2 until the device confirms intercom started for `session`
-    (i.e. {"result":0,"operation":"start","session":<session>}). Returns True
-    if confirmed before the timeout, else False."""
+def _cloud_props(protocol, did, keys):
+    """Read props via the app's real channel: POST dreame-user-iot/iotstatus/props.
+
+    The device does NOT serve some Monitor props (incl. 10001.2 intercom status)
+    on the data bus (`code:-1`); the app reads them from this cloud endpoint.
+    """
+    try:
+        return protocol.cloud._api_call(
+            "dreame-user-iot/iotstatus/props", {"did": did, "keys": keys}
+        )
+    except Exception as err:  # noqa: BLE001 - best effort
+        app.logger.warning("cloud props read failed: %s", err)
+        return None
+
+
+def _wait_intercom_cloud(protocol, did, session, seconds=4):
+    """Confirm via the CLOUD props channel that the device armed intercom for
+    `session` (10001.2 echoes {"result":0,"operation":"start","session":<sid>}),
+    polling briefly. Returns True as soon as it's confirmed - IMPORTANT to keep
+    this short so audio is pushed while intercom is still freshly armed."""
     deadline = time.time() + seconds
     while time.time() < deadline:
-        val = _read_monitor_audio(protocol, did)
-        app.logger.info("10001.2 poll -> %s", val)
-        if (
-            isinstance(val, dict)
-            and val.get("result") == 0
-            and val.get("operation") == "start"
-            and val.get("session") == session
-        ):
-            return True
-        time.sleep(0.5)
+        resp = _cloud_props(protocol, did, "10001.2")
+        try:
+            entries = (resp or {}).get("data") or []
+            if entries:
+                val = json.loads(entries[0].get("value", "{}"))
+                app.logger.info("10001.2 cloud -> %s", val)
+                if (
+                    val.get("result") == 0
+                    and val.get("operation") == "start"
+                    and val.get("session") == session
+                ):
+                    return True
+        except Exception:  # noqa: BLE001
+            pass
+        time.sleep(0.3)
     return False
 
 
@@ -456,7 +477,7 @@ def speak():
             {"session": session, "operType": "intercom", "operation": "start"},
         )
         app.logger.info("/speak VOICE_OPERATE start(session=%s) -> %s", session, start_voice)
-        confirmed = _wait_intercom(protocol, did, session)
+        confirmed = _wait_intercom_cloud(protocol, did, session)
         app.logger.info("/speak intercom confirmed=%s", confirmed)
         p2p_info = get_p2p_info(protocol, did)
     except Exception:
