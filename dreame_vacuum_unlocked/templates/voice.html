@@ -116,8 +116,9 @@
       const audioOpts = AUDIO_FILES.map((f) =>
         `<option value="${escapeHtml(f)}">${escapeHtml(f)}</option>`).join("");
       wrap.innerHTML = MAPPINGS.map((m) => {
+        const sub = m.en ? `tts id: ${escapeHtml(m.id)} &middot; ${escapeHtml(m.en)}` : `tts id: ${escapeHtml(m.id)}`;
         return `<div class="row">
-          <div class="name"><b>${escapeHtml(m.name)}</b><span class="id">tts id: ${escapeHtml(m.id)}</span></div>
+          <div class="name"><b>${escapeHtml(m.name)}</b><span class="id">${sub}</span></div>
           <select class="audio" data-id="${escapeHtml(m.id)}">
             <option value="">No audio</option>
             ${audioOpts}
