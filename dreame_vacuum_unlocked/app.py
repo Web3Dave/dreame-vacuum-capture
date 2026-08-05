@@ -228,6 +228,54 @@ def camera_action(protocol, did, aiid, piid, value):
     return signed_call(protocol, send_command_url(protocol), body)
 
 
+def _read_monitor_audio(protocol, did):
+    """Read Monitor siid 10001 / piid 2 (PropMonitorAudioStatus).
+
+    The device reports its intercom state here. When it arms talk-back it sets
+    a JSON string like {"result":0,"operation":"start","session":"<sid>"}
+    (the session it got in the VOICE_OPERATE value). Returns a parsed dict (or
+    the raw scalar) or None on any failure.
+    """
+    try:
+        resp = protocol.get_properties([{"did": did, "siid": SIID_CAMERA_SERVICE, "piid": 2}])
+        # Accept either a list of results or the raw response.
+        if isinstance(resp, list) and resp:
+            entry = resp[0] if isinstance(resp[0], dict) else resp
+            raw = entry.get("value") if isinstance(entry, dict) else None
+        else:
+            raw = resp
+        if raw is None:
+            return None
+        if isinstance(raw, str):
+            try:
+                return json.loads(raw)
+            except Exception:
+                return raw
+        return raw
+    except Exception as err:  # noqa: BLE001 - best effort probe
+        app.logger.warning("could not read 10001.2: %s", err)
+        return None
+
+
+def _wait_intercom(protocol, did, session, seconds=10):
+    """Poll 10001.2 until the device confirms intercom started for `session`
+    (i.e. {"result":0,"operation":"start","session":<session>}). Returns True
+    if confirmed before the timeout, else False."""
+    deadline = time.time() + seconds
+    while time.time() < deadline:
+        val = _read_monitor_audio(protocol, did)
+        app.logger.info("10001.2 poll -> %s", val)
+        if (
+            isinstance(val, dict)
+            and val.get("result") == 0
+            and val.get("operation") == "start"
+            and val.get("session") == session
+        ):
+            return True
+        time.sleep(0.5)
+    return False
+
+
 def _check(resp, step):
     ok = resp and resp.get("success") and resp.get("data", {}).get("result", {}).get("code") == 0
     if not ok:
@@ -397,14 +445,19 @@ def speak():
     try:
         connect_device(protocol, did)
         product_id, device_name = get_identity(protocol, did)
-        start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
-        # Enter intercom mode on the device - this is what arms the speaker for
-        # talk-back. The device ignores the AudioStream send-service on the XP2P
-        # channel until it has been put into intercom mode (Monitor VOICE_OPERATE
-        # aiid 2 / PropMonitorAudioStatus piid 2) on this same active session.
-        start_voice = camera_action(protocol, did, 2, 2,
-                                    {"operType": "intercom", "operation": "start"})
-        app.logger.info("/speak VOICE_OPERATE start -> %s", start_voice)
+        session = start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
+        # Enter intercom mode WITH the active session. The app's Monitor module
+        # always injects `session` into the VOICE_OPERATE value (Monitor.
+        # startVoice -> sendAction adds session:this.session); the device only
+        # arms talk-back and echoes that session back on 10001.2 when it matches
+        # the active monitor session. Sending it without a session never arms it.
+        start_voice = camera_action(
+            protocol, did, 2, 2,
+            {"session": session, "operType": "intercom", "operation": "start"},
+        )
+        app.logger.info("/speak VOICE_OPERATE start(session=%s) -> %s", session, start_voice)
+        confirmed = _wait_intercom(protocol, did, session)
+        app.logger.info("/speak intercom confirmed=%s", confirmed)
         p2p_info = get_p2p_info(protocol, did)
     except Exception:
         _safe_disconnect(protocol)
@@ -429,14 +482,18 @@ def speak():
             "success": result.returncode == 0,
             "returncode": result.returncode,
             "audio_bytes": len(audio),
+            "intercom_confirmed": confirmed,
             "output": output[-4000:],
         })
     except subprocess.TimeoutExpired:
         return jsonify({"success": False, "error": f"p2p_speak timed out after {timeout}s"})
     finally:
-        # Leave intercom mode.
+        # Leave intercom mode (with the same session it was entered with).
         try:
-            camera_action(protocol, did, 2, 2, {"operType": "intercom", "operation": "end"})
+            camera_action(
+                protocol, did, 2, 2,
+                {"session": session, "operType": "intercom", "operation": "end"},
+            )
         except Exception:
             app.logger.warning("/speak VOICE_OPERATE end failed", exc_info=True)
         _safe_disconnect(protocol)
