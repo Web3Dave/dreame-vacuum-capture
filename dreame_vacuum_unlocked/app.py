@@ -655,20 +655,26 @@ def speak_start():
         audio_url = tags.get("AUDIO_URL")
         if live_url and audio_url:
             rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-            # Mux video + mic audio, but tolerate the mic dropping out:
-            # optional maps (?'suffix) mean the RTSP still publishes video-only
-            # whenever the live-audio feed has no packet, and `-c:a copy` avoids
-            # fragile re-encoding (the mic downlink is already AAC). This keeps
-            # the camera stream reliable even if intercom audio flickers.
+            mux_log = f"/tmp/dreame_mux_{did}.log"
+            # Two-input mux: video + the vacuum-mic "live-audio" stream. Two
+            # inputs means ffmpeg won't start publishing until BOTH open, so
+            # make the audio input non-blocking: -timeout/-rw_timeout cap how
+            # long a dead/stalled mic feed can hold us, -reconnect keeps it
+            # trying, and optional maps (?) mean an absent audio track still
+            # lets video publish. stderr goes to mux_log for diagnostics.
             rtsp_proc = subprocess.Popen(
                 ["ffmpeg", "-y",
-                 "-i", live_url, "-i", audio_url,
+                 "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+                 "-i", live_url,
+                 "-rw_timeout", "5000000", "-timeout", "5000000",
+                 "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+                 "-i", audio_url,
                  "-map", "0:v?", "-map", "1:a?",
                  "-c:v", "copy", "-c:a", "copy",
                  "-f", "rtsp", rtsp_url],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                stdout=subprocess.DEVNULL, stderr=open(mux_log, "w"),
             )
-            app.logger.info("/speak/start muxing mic -> %s", rtsp_url)
+            app.logger.info("/speak/start muxing mic -> %s (log %s)", rtsp_url, mux_log)
         else:
             app.logger.warning(
                 "/speak/start rtsp requested but got live=%s audio=%s",
@@ -826,10 +832,19 @@ def speak_status():
         rtsp_proc = entry.get("rtsp_proc") if entry else None
         rtsp_running = bool(rtsp_proc and rtsp_proc.poll() is None)
         rtsp_url = entry.get("rtsp_url") if entry else None
+    mux_log = f"/tmp/dreame_mux_{did}.log"
+    mux_tail = None
+    try:
+        if os.path.isfile(mux_log):
+            with open(mux_log, "r", errors="replace") as fh:
+                mux_tail = "".join(fh.readlines()[-40:])
+    except Exception:
+        pass
     return jsonify({
         "running": running,
         "rtsp_running": rtsp_running,
         "rtsp_url": rtsp_url if rtsp_running else None,
+        "mux_log": mux_tail,
     })
 
 
