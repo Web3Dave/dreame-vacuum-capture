@@ -494,7 +494,7 @@ def speak():
     timeout = 120
     try:
         result = subprocess.run(
-            [P2P_INTERCOM_BINARY, config_path, raw_path, body.get("cmd", "action=voice"), "0"],
+            [P2P_INTERCOM_BINARY, config_path, raw_path, body.get("cmd", "action=voice"), body.get("crypto", "0")],
             env=env, capture_output=True, text=True, timeout=timeout,
         )
         output = (result.stdout or "") + (result.stderr or "")
