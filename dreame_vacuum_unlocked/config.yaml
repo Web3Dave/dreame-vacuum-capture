@@ -4,7 +4,7 @@ description: >-
   and RTSP streams from the vacuum's onboard camera via Tencent's XP2P SDK,
   and hosts the control panel UI. Install the dreame_vacuum_unlocked_integration integration
   alongside it - that owns the vacuum entities and drives this add-on's API.
-version: "3.54.1"
+version: "3.55.0"
 slug: dreame_vacuum_unlocked
 url: https://github.com/Web3Dave/dreame-vacuum-unlocked
 init: false

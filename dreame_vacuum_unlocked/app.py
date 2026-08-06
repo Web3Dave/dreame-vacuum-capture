@@ -648,41 +648,24 @@ def speak_start():
 
     threading.Thread(target=_reader, daemon=True).start()
 
-    # Collect the tagged URLs the intercom client prints (live video + the
-    # separate vacuum-mic "live-audio" stream) so we can optionally mux them.
+    # Optionally republish live_url as RTSP. Single input only - confirmed
+    # against a real device that the "live" FLV feed already carries AAC
+    # audio tags once intercom is armed (which it already is by this point,
+    # since VOICE_OPERATE ran before p2p_intercom was even started above), so
+    # there's no separate mic stream to mux in and no timing dance needed:
+    # by the time ffmpeg probes live_url here, the audio tags are already
+    # flowing. See _spawn_ffmpeg_republish's docstring.
     rtsp_url = None
     rtsp_proc = None
     if body.get("rtsp"):
-        tags = _read_stream_tags(line_q, ("LIVE_URL", "AUDIO_URL"), timeout=30)
+        tags = _read_stream_tags(line_q, ("LIVE_URL",), timeout=30)
         live_url = tags.get("LIVE_URL")
-        audio_url = tags.get("AUDIO_URL")
-        if live_url and audio_url:
+        if live_url:
             rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-            mux_log = f"/tmp/dreame_mux_{did}.log"
-            # Two-input mux: video + the vacuum-mic "live-audio" stream. Two
-            # inputs means ffmpeg won't start publishing until BOTH open, so
-            # make the audio input non-blocking: -timeout/-rw_timeout cap how
-            # long a dead/stalled mic feed can hold us, -reconnect keeps it
-            # trying, and optional maps (?) mean an absent audio track still
-            # lets video publish. stderr goes to mux_log for diagnostics.
-            rtsp_proc = subprocess.Popen(
-                ["ffmpeg", "-y",
-                 "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-                 "-i", live_url,
-                 "-rw_timeout", "5000000", "-timeout", "5000000",
-                 "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-                 "-i", audio_url,
-                 "-map", "0:v?", "-map", "1:a?",
-                 "-c:v", "copy", "-c:a", "copy",
-                 "-f", "rtsp", rtsp_url],
-                stdout=subprocess.DEVNULL, stderr=open(mux_log, "w"),
-            )
-            app.logger.info("/speak/start muxing mic -> %s (log %s)", rtsp_url, mux_log)
+            rtsp_proc = _spawn_ffmpeg_republish(live_url, rtsp_url)
+            app.logger.info("/speak/start republishing -> %s", rtsp_url)
         else:
-            app.logger.warning(
-                "/speak/start rtsp requested but got live=%s audio=%s",
-                tags.get("LIVE_URL"), tags.get("AUDIO_URL"),
-            )
+            app.logger.warning("/speak/start rtsp requested but got no LIVE_URL")
 
     with _audio_streams_lock:
         _active_audio_streams[did] = {
@@ -1030,24 +1013,22 @@ def _classify_snapshot(tag: str, snapshot_path: str) -> list:
     return reports
 
 
-def _spawn_ffmpeg_republish(live_url, rtsp_url, audio_url=None):
-    if audio_url:
-        # Video + vacuum-mic audio mux. Thread the device mic "live-audio"
-        # feed as an OPTIONAL second input: when the intercom is armed the mic
-        # streams AAC and it rides in the RTSP; when disarmed the video-only
-        # publish continues (optional maps + a non-blocking audio input).
-        return subprocess.Popen(
-            ["ffmpeg", "-y",
-             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-             "-i", live_url,
-             "-rw_timeout", "5000000", "-timeout", "5000000",
-             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
-             "-i", audio_url,
-             "-map", "0:v?", "-map", "1:a?",
-             "-c:v", "copy", "-c:a", "copy",
-             "-f", "rtsp", rtsp_url],
-            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-        )
+def _spawn_ffmpeg_republish(live_url, rtsp_url):
+    """Single input, `-c copy`, no explicit -map: ffmpeg picks up every
+    elementary stream present in the source FLV. This is deliberately NOT a
+    two-input mux against a separate mic URL - confirmed directly against a
+    real device that the "live" feed already carries AAC audio tags
+    (interleaved with the video tags) once intercom is armed, on the SAME
+    URL. The separate "live-audio" endpoint p2p_intercom also derives
+    (AUDIO_URL) returns an immediate empty response and isn't needed.
+
+    Because RTSP's SDP is negotiated once at startup from ffmpeg's initial
+    probe, this must be (re)started AFTER intercom is armed for the audio
+    track to be included - a process started before arming, or before the
+    device's audio tags begin flowing, will probe video-only and never add
+    audio retroactively. See /stream/intercom, which respawns this on every
+    arm/disarm toggle for exactly that reason.
+    """
     return subprocess.Popen(
         ["ffmpeg", "-y", "-i", live_url, "-c", "copy", "-f", "rtsp", rtsp_url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1250,9 +1231,10 @@ def _ffmpeg_watchdog(did, creds):
             _safe_disconnect(protocol)
             # A fresh session means a fresh p2p handle - intercom (VOICE_OPERATE)
             # was armed against the OLD session and does not carry over, so the
-            # mic leg starts back up video-only. Re-toggling the Intercom
-            # switch re-arms it (and respawns ffmpeg WITH audio) properly.
-            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, None)
+            # device won't be sending audio tags on the new live_url until
+            # re-armed. Re-toggling the Intercom switch re-arms it (and
+            # respawns ffmpeg, picking the now-present audio tags up).
+            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
             last_bytes, last_progress, respawns_without_progress = None, time.time(), 0
             with _streams_lock:
                 current = _active_streams.get(did)
@@ -1273,13 +1255,7 @@ def _ffmpeg_watchdog(did, creds):
             continue
 
         _kill(ffmpeg_proc)
-        with _streams_lock:
-            current_stream = _active_streams.get(did)
-            respawn_audio_url = (
-                current_stream.get("audio_url")
-                if current_stream and current_stream.get("intercom_armed") else None
-            )
-        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url, respawn_audio_url)
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url)
         last_bytes, last_progress = None, time.time()
         respawns_without_progress += 1
 
@@ -1325,12 +1301,12 @@ def stream_start():
     )
 
     rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-    # Video-only at start: the mic (live-audio) feed carries no real data
-    # until intercom is armed, so an ffmpeg input opened against it now would
-    # sit dead/reconnecting for the life of the process - /stream/intercom
-    # respawns ffmpeg WITH the audio leg once the mic is actually confirmed
-    # armed and flowing.
-    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, None)
+    # Video-only at start: intercom isn't armed yet, so the device isn't
+    # putting audio tags into live_url yet either - ffmpeg's initial probe
+    # will see video only. /stream/intercom respawns this once armed, so a
+    # fresh probe picks up the now-present audio tags (see
+    # _spawn_ffmpeg_republish's docstring for why a respawn is required).
+    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
 
     with _streams_lock:
         _active_streams[did] = {
@@ -1397,9 +1373,11 @@ def stream_stop():
 @app.route("/stream/intercom", methods=["POST"])
 def stream_intercom():
     """Arm/disarm the intercom (vacuum-mic) layer on a RUNNING stream. This is
-    the audio-out toggle: on arms the mic so the live-audio feed flows into the
-    stream's RTSP and talk is enabled; off disarms it. The video stream itself
-    keeps running either way - call /stream/start to (re)open it."""
+    the audio-out toggle: on arms the mic, which makes the device start muxing
+    AAC audio tags directly into the SAME live_url FLV feed /stream/start
+    already opened (confirmed against a real device - there's no separate mic
+    stream to open); off disarms it. The video stream itself keeps running
+    either way - call /stream/start to (re)open it."""
     body = _require_body("did", "on")
     did = body["did"]
     on = bool(body.get("on"))
@@ -1424,20 +1402,19 @@ def stream_intercom():
     armed = confirmed if on else False
     app.logger.info("stream/intercom %s for %s -> resp=%s confirmed=%s", operation, did, resp, confirmed)
 
-    # The mic (live-audio) feed only carries real data once armed like this -
-    # ffmpeg's audio input has to be opened (or dropped) fresh right now, not
-    # left over from whatever state it was in when the stream first started.
-    # Without this respawn, arming later never picks up the now-live feed
-    # (input was already dead/timed-out), and disarming leaves a permanently
-    # dead second input in place - both were observed to eventually destabilize
-    # the whole two-input mux and take the video leg down with it.
+    # ffmpeg has to be restarted for its RTSP output to pick up the change:
+    # RTSP's SDP is negotiated once from ffmpeg's initial probe of live_url,
+    # so a process that started before arming (video-only at the time) never
+    # retroactively adds the audio track once the device starts sending it,
+    # and one that started while armed keeps announcing audio even after
+    # disarming (silence, not a dropped track). A fresh probe right now
+    # reflects whatever the device is actually sending at this instant.
     with _streams_lock:
         cur = _active_streams.get(did)
         if cur:
             cur["intercom_armed"] = armed
             old_ffmpeg = cur["ffmpeg_proc"]
             live_url, rtsp_url = cur["live_url"], cur["rtsp_url"]
-            audio_url = cur.get("audio_url") if armed else None
         else:
             old_ffmpeg = None
 
@@ -1447,7 +1424,7 @@ def stream_intercom():
         # brief overlap would make the new ffmpeg fail to publish rather than
         # take over cleanly.
         _kill(old_ffmpeg)
-        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url, audio_url)
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url)
         with _streams_lock:
             cur = _active_streams.get(did)
             if cur is None or cur["p2p_proc"].poll() is not None:
