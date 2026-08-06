@@ -575,13 +575,35 @@ def speak():
         _safe_disconnect(protocol)
 
 
+def _read_stream_tags(line_q, wanted, timeout=30):
+    """Read lines from a p2p client's output queue until it has reached each
+    wanted prefix (e.g. LIVE_URL, AUDIO_URL). Returns {prefix: value}."""
+    found = {}
+    deadline = time.time() + timeout
+    while time.time() < deadline and len(found) < len(wanted):
+        try:
+            line = line_q.get(timeout=0.5)
+        except queue.Empty:
+            continue
+        for prefix in wanted:
+            if prefix in found:
+                continue
+            if line.startswith(prefix + ":"):
+                val = line.split(":", 1)[1].strip()
+                if val and val != "(null)":
+                    found[prefix] = val
+    return found
+
+
 @app.route("/speak/start", methods=["POST"])
 def speak_start():
     """Open a persistent talk-back session: arm intercom, open the p2p send
     channel, and keep it open (backed by `p2p_intercom` in streaming mode,
     reading file paths from stdin) so multiple clips can be pushed with
     /speak/send without re-arming intercom between each one. Mirrors
-    /stream/start's shape."""
+    /stream/start's shape. When `rtsp` is truthy in the body it also pulls
+    the vacuum's mic ("live-audio") and muxes video + mic into the {did} RTSP
+    so the HA camera widget gets sound while intercom is armed."""
     body = _require_body("username", "password", "four_digit_code", "did")
     did = body["did"]
 
@@ -623,14 +645,40 @@ def speak_start():
 
     threading.Thread(target=_reader, daemon=True).start()
 
+    # Collect the tagged URLs the intercom client prints (live video + the
+    # separate vacuum-mic "live-audio" stream) so we can optionally mux them.
+    rtsp_url = None
+    rtsp_proc = None
+    if body.get("rtsp"):
+        tags = _read_stream_tags(line_q, ("LIVE_URL", "AUDIO_URL"), timeout=30)
+        live_url = tags.get("LIVE_URL")
+        audio_url = tags.get("AUDIO_URL")
+        if live_url and audio_url:
+            rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
+            rtsp_proc = subprocess.Popen(
+                ["ffmpeg", "-y",
+                 "-i", live_url, "-i", audio_url,
+                 "-map", "0:v", "-map", "1:a",
+                 "-c:v", "copy", "-c:a", "aac",
+                 "-f", "rtsp", rtsp_url],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            )
+            app.logger.info("/speak/start muxing mic -> %s", rtsp_url)
+        else:
+            app.logger.warning(
+                "/speak/start rtsp requested but got live=%s audio=%s",
+                tags.get("LIVE_URL"), tags.get("AUDIO_URL"),
+            )
+
     with _audio_streams_lock:
         _active_audio_streams[did] = {
             "p2p_proc": proc, "protocol": protocol, "session": session,
             "product_id": product_id, "device_name": device_name,
             "started_at": time.time(), "line_q": line_q,
+            "rtsp_url": rtsp_url, "rtsp_proc": rtsp_proc,
         }
 
-    return jsonify({"success": True, "intercom_confirmed": confirmed})
+    return jsonify({"success": True, "intercom_confirmed": confirmed, "rtsp_url": rtsp_url})
 
 
 @app.route("/speak/send", methods=["POST"])
@@ -728,6 +776,15 @@ def speak_stop():
     if not entry:
         return jsonify({"success": True, "was_running": False})
 
+    # Tear down the optional video+mic RTSP republish leg first.
+    rtsp_proc = entry.get("rtsp_proc")
+    if rtsp_proc and rtsp_proc.poll() is None:
+        try:
+            rtsp_proc.terminate()
+            rtsp_proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            rtsp_proc.kill()
+
     proc = entry["p2p_proc"]
     try:
         if proc.poll() is None:
@@ -761,7 +818,14 @@ def speak_status():
     with _audio_streams_lock:
         entry = _active_audio_streams.get(did)
         running = bool(entry and entry["p2p_proc"].poll() is None)
-    return jsonify({"running": running})
+        rtsp_proc = entry.get("rtsp_proc") if entry else None
+        rtsp_running = bool(rtsp_proc and rtsp_proc.poll() is None)
+        rtsp_url = entry.get("rtsp_url") if entry else None
+    return jsonify({
+        "running": running,
+        "rtsp_running": rtsp_running,
+        "rtsp_url": rtsp_url if rtsp_running else None,
+    })
 
 
 @app.route("/devices", methods=["POST"])

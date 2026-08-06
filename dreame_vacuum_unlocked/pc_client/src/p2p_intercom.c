@@ -263,6 +263,24 @@ int main(int argc, char **argv)
     fprintf(stderr, "LIVE_URL: %s\n", url ? url : "(null)");
     fflush(stderr);
 
+    /* The vacuum's mic is a SEPARATE audio-only stream ("ipc.flv?action=live-audio",
+     * the same suffix the app's SDK uses for the intercom downlink - hearing the
+     * robot). Build its URL off the same local proxy base as LIVE_URL, so a
+     * wrapper can mux video + mic into one RTSP while intercom is armed. */
+    if (url) {
+        char *ipc = strstr(url, "ipc.flv");
+        if (ipc) {
+            char audio_url[1024] = {0};
+            size_t base = (size_t)(ipc - url);
+            if (base + 32 < sizeof(audio_url)) {
+                snprintf(audio_url, sizeof(audio_url),
+                         "%.*sipc.flv?action=live-audio", (int)base, url);
+                fprintf(stderr, "AUDIO_URL: %s\n", audio_url);
+                fflush(stderr);
+            }
+        }
+    }
+
     /* Small settle so the live session is established before voice. */
     __SYS_SLEEP_MS(1500);
 
