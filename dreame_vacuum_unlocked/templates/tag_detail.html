@@ -30,6 +30,13 @@
              border-radius:10px; overflow:hidden; position:relative; }
     figure a.open { display:block; line-height:0; }
     figure img { width:100%; aspect-ratio:16/9; object-fit:cover; background:rgba(127,127,127,.15); }
+    figure video { width:100%; aspect-ratio:16/9; object-fit:cover; background:#000; display:block; }
+    .mtype { position:absolute; bottom:8px; left:8px; font-size:10.5px; letter-spacing:.4px;
+             padding:2px 7px; border-radius:999px; color:#fff; font-weight:600; }
+    .mtype.photo { background:rgba(3,169,244,.88); }
+    .mtype.video { background:rgba(198,40,40,.9); }
+    #video-modal { width:min(860px,95vw); }
+    #video-modal video { width:100%; max-height:70vh; display:block; background:#000; }
     figcaption { padding:7px 10px; font-size:12px; color:var(--muted);
                  font-variant-numeric:tabular-nums; display:flex; align-items:center; gap:6px; }
     figcaption .when { flex:1; min-width:0; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
@@ -195,6 +202,17 @@
     </div>
   </dialog>
 
+  <dialog id="video-modal">
+    <div class="dlg-head"><strong style="flex:1">Clip</strong><span class="sub" id="vm-name"></span></div>
+    <div class="dlg-body" style="padding:0">
+      <video id="vm-video" controls playsinline preload="metadata"></video>
+    </div>
+    <div class="dlg-foot">
+      <button type="button" class="ghost" id="vm-close">Close</button>
+      <button type="button" class="primary" id="vm-download">Download</button>
+    </div>
+  </dialog>
+
   <script>
     const BASE = "{{ base }}";
     const TAG_ID = "{{ tag.id }}";
@@ -206,19 +224,28 @@
 
     function figureHtml(s) {
       const url = `${BASE}/snapshot/${encodeURIComponent(TAG_ID)}/${encodeURIComponent(s.filename)}`;
+      const video = s.kind === "video";
+      const badge = `<span class="mtype ${video ? "video" : "photo"}">${video ? "video" : "photo"}</span>`;
+      const body = video
+        ? `<video muted preload="metadata" src="${url}"></video>`
+        : `<img loading="lazy" alt="${esc(s.filename)}" src="${url}">`;
+      // Videos open in a playback modal (with download); photos in a new tab.
+      // The classify menu is photo-only - a video is never fed the classifier.
+      const opener = video
+        ? `<a class="open" href="#" data-video="${esc(url)}" data-name="${esc(s.filename)}">${body}</a>`
+        : `<a class="open" href="${url}" target="_blank" rel="noopener">${body}</a>`;
       return `
         <figure data-filename="${esc(s.filename)}">
-          <a class="open" href="${url}" target="_blank" rel="noopener">
-            <img loading="lazy" alt="${esc(s.filename)}" src="${url}">
-          </a>
-          <div class="dots-anchor">
+          ${opener}
+          ${badge}
+          ${video ? "" : `<div class="dots-anchor">
             <button type="button" class="dots" data-menu="${esc(s.filename)}" aria-label="Options">&#8942;</button>
             <div class="menu" hidden>
               <button type="button" data-assign="${esc(s.filename)}">Assign classification</button>
               <button type="button" data-rerun="${esc(s.filename)}">Rerun classifiers</button>
               <button type="button" data-view-results="${esc(s.filename)}">View classifications</button>
             </div>
-          </div>
+          </div>`}
           <figcaption><span class="when">${new Date(s.taken_at * 1000).toLocaleString()}</span></figcaption>
         </figure>`;
     }
@@ -266,6 +293,28 @@
         if (menu !== except) menu.hidden = true;
       }
     }
+
+    // ---- clip playback modal -------------------------------------------
+    function openVideo(url, name) {
+      document.getElementById("vm-name").textContent = name || "";
+      const v = document.getElementById("vm-video");
+      v.src = url; v.load();
+      document.getElementById("video-modal").showModal();
+      v.play().catch(() => {});
+    }
+    function closeVideo() {
+      const v = document.getElementById("vm-video");
+      v.pause();
+      v.removeAttribute("src"); v.load();
+      document.getElementById("video-modal").close();
+    }
+    function downloadVideo() {
+      const a = document.createElement("a");
+      a.href = document.getElementById("vm-video").src;
+      a.download = document.getElementById("vm-name").textContent || "clip.mp4";
+      document.body.appendChild(a); a.click(); a.remove();
+    }
+    document.getElementById("video-modal").addEventListener("cancel", closeVideo);
 
     // ---- assign classification -------------------------------------------
     const TYPE_LABEL = {sub_label: "Sub label", attribute: "Attribute"};
@@ -429,6 +478,12 @@
 
     document.addEventListener("click", e => {
       const t = e.target;
+      const videoLink = t.closest && t.closest("a[data-video]");
+      if (videoLink) {
+        e.preventDefault();
+        openVideo(videoLink.dataset.video, videoLink.dataset.name || "");
+        return;
+      }
       if (t.dataset.menu !== undefined) {
         const menu = t.nextElementSibling;
         const willOpen = menu.hidden;
@@ -455,6 +510,8 @@
       else if (t.id === "assign-save") saveAssign();
       else if (t.id === "results-close") $("results-modal").close();
       else if (t.id === "results-rerun") rerunClassifiers(resultsFilename);
+      else if (t.id === "vm-close") closeVideo();
+      else if (t.id === "vm-download") downloadVideo();
       if (!t.closest(".dots-anchor")) closeMenus();
     });
 

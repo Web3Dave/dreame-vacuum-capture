@@ -25,7 +25,11 @@ STEP_TYPES = {
         "label": "Start camera stream",
         "help": "Holds one camera session open. Keeps turns silent and lets "
                 "snapshots come off the live feed.",
-        "fields": [],
+        "fields": [
+            ("audio", "bool", False, False,
+             "Also stream sound from the vacuum's mic (arms the intercom), "
+             "so clips recorded with sound capture it"),
+        ],
         "service": ("switch", "turn_on"),
     },
     "stop_stream": {
@@ -33,6 +37,28 @@ STEP_TYPES = {
         "help": "Releases the camera so the phone app can use it again.",
         "fields": [],
         "service": ("switch", "turn_off"),
+    },
+    "record_clip": {
+        "label": "Record clip",
+        "help": "Start recording from the camera's live stream into a video "
+                "clip. Must be followed by an 'End clip' step, which stops "
+                "and saves it as an h264 mp4 under this step's tag.",
+        "fields": [
+            ("tag", "str", False, "general",
+             "Groups clips alongside snapshots, e.g. poop_check"),
+            ("audio", "bool", False, False,
+             "Also record the vacuum's mic into the clip - needs the stream "
+             "to have sound (a start_stream with the audio option)"),
+        ],
+        "service": ("dreame_vacuum_unlocked_integration", "record_clip"),
+    },
+    "end_clip": {
+        "label": "End clip",
+        "help": "Stop the recording started by a 'Record clip' step and save "
+                "it as an h264 mp4 under that step's tag. Clips are never run "
+                "through the classifier - that is for photos only.",
+        "fields": [],
+        "service": ("dreame_vacuum_unlocked_integration", "end_clip"),
     },
     "go_to_point": {
         "label": "Go to point",
@@ -120,6 +146,18 @@ def _coerce(value, kind, where):
                     f"{where} must be whole room ids, got {item!r}"
                 ) from None
         return out
+    if kind == "bool":
+        if isinstance(value, bool):
+            return value
+        if isinstance(value, (int, float)) and value in (0, 1):
+            return bool(value)
+        if isinstance(value, str):
+            v = value.strip().lower()
+            if v in ("true", "1", "yes", "on", "y"):
+                return True
+            if v in ("false", "0", "no", "off", "n", ""):
+                return False
+        raise StepError(f"{where} must be yes or no, got {value!r}")
     return str(value)
 
 
@@ -156,7 +194,65 @@ def validate_step(step, index=0):
 def validate_steps(steps):
     if not isinstance(steps, list) or not steps:
         raise StepError("A task needs at least one step")
-    return [validate_step(step, i) for i, step in enumerate(steps)]
+    out = [validate_step(step, i) for i, step in enumerate(steps)]
+    return _validate_pairings(out)
+
+
+def _validate_pairings(steps):
+    """Resources that are turned on must be turned off within the same task.
+
+    A stream left open holds the device's single camera session forever -
+    the phone app can't use it until something closes the task. A recording
+    left running ('record_clip' with no 'end_clip') would grow on disk until
+    it fills the card. Both are structural mistakes that show up as soon as
+    the steps are read, so catch them here rather than hours later behind a
+    running task.
+    """
+    open_streams = 0
+    open_clips = 0
+    for i, step in enumerate(steps):
+        kind = step["type"]
+        if kind == "start_stream":
+            if open_streams:
+                raise StepError(
+                    f"Step {i + 1} (start_stream): a stream is already running "
+                    "from an earlier step - add a stop_stream step first (the "
+                    "vacuum only allows one camera session at a time)"
+                )
+            open_streams += 1
+        elif kind == "stop_stream":
+            if open_streams == 0:
+                raise StepError(
+                    f"Step {i + 1} (stop_stream): there is no stream running "
+                    "to stop - a stop_stream must follow a start_stream step"
+                )
+            open_streams -= 1
+        elif kind == "record_clip":
+            if open_clips:
+                raise StepError(
+                    f"Step {i + 1} (record_clip): a clip is already recording "
+                    "from an earlier step - add an end_clip step before "
+                    "starting another"
+                )
+            open_clips += 1
+        elif kind == "end_clip":
+            if open_clips == 0:
+                raise StepError(
+                    f"Step {i + 1} (end_clip): there is no clip recording "
+                    "to end - an end_clip must follow a record_clip step"
+                )
+            open_clips -= 1
+    if open_streams:
+        raise StepError(
+            "A start_stream step has no matching stop_stream - a stream left "
+            "open holds the camera. Add a stop_stream to the end of the task."
+        )
+    if open_clips:
+        raise StepError(
+            "A record_clip step has no matching end_clip - the recording "
+            "would never be saved. Add an end_clip step to stop it."
+        )
+    return steps
 
 
 def describe(step):
@@ -170,11 +266,16 @@ def describe(step):
     return f"{label}" + (f" ({detail})" if detail else "")
 
 
-def to_service_calls(steps, entity_id, stream_switch=None):
+def to_service_calls(steps, entity_id, stream_switch=None, intercom_switch=None):
     """Steps as Home Assistant service calls, ready to export or execute.
 
     `use_camera_session: false` is written out on any turn that happens while a
     stream is open, so the exported script behaves exactly as the task does.
+
+    A `start_stream` with `audio` also turns on the intercom switch (the
+    vacuum-mic layer), so the stream carries sound for downstream clips - and
+    the exported script reads back as exactly the two switches a task that
+    streams sound actually flips.
     """
     calls = []
     streaming = False
@@ -184,15 +285,36 @@ def to_service_calls(steps, entity_id, stream_switch=None):
         data = {k: v for k, v in step.items() if k != "type"}
         target = entity_id
 
-        if kind in ("start_stream", "stop_stream"):
+        if kind == "start_stream":
             if not stream_switch:
                 raise StepError(
-                    f"'{kind}' needs the vacuum's stream switch, which this "
+                    "'start_stream' needs the vacuum's stream switch, which this "
                     "device has not reported - is the camera set up?"
                 )
-            target = stream_switch
-            streaming = kind == "start_stream"
-        elif kind == "rotate_to_heading" and streaming:
+            # `audio` is dropped from the switch data: switch.turn_on has no
+            # such attribute. Sound is armed as its own switch instead.
+            calls.append({"action": "switch.turn_on", "target": {"entity_id": stream_switch}})
+            streaming = True
+            if step.get("audio"):
+                if not intercom_switch:
+                    raise StepError(
+                        "start_stream with its audio option on needs the vacuum's "
+                        "intercom switch, which this device has not reported - "
+                        "is the camera set up?"
+                    )
+                calls.append({"action": "switch.turn_on", "target": {"entity_id": intercom_switch}})
+            continue
+        if kind == "stop_stream":
+            if not stream_switch:
+                raise StepError(
+                    "'stop_stream' needs the vacuum's stream switch, which this "
+                    "device has not reported - is the camera set up?"
+                )
+            calls.append({"action": "switch.turn_off", "target": {"entity_id": stream_switch}})
+            streaming = False
+            continue
+
+        if kind == "rotate_to_heading" and streaming:
             data["use_camera_session"] = False
 
         calls.append({"action": f"{domain}.{service}", "target": {"entity_id": target},

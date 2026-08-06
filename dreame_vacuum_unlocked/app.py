@@ -130,6 +130,13 @@ _streams_lock = threading.Lock()
 _active_audio_streams = {}
 _audio_streams_lock = threading.Lock()
 
+# did -> {"proc": Popen (ffmpeg, stdin=PIPE), "temp": str, "tag": str,
+#         "audio": bool, "started_at": int}. A clip spans two steps: record_clip
+# opens one, end_clip closes it and moves the finished mp4 into the tag's
+# folder. Only one recording per device at a time.
+_active_recordings = {}
+_recordings_lock = threading.Lock()
+
 
 def _addon_options():
     if not os.path.exists(OPTIONS_PATH):
@@ -949,6 +956,150 @@ def capture():
     })
 
 
+def _record_ffmpeg(rtsp_url, temp_path, audio):
+    """An ffmpeg that records the running stream's RTSP to a fragmented mp4.
+
+    Video is always re-encoded to h264 (`libx264`/`yuv420p`, the widest
+    browser + phone compat); the vacuum's RTSP is already h264, but encoding
+    guarantees the delivered file is h264 mp4 regardless of what the source
+    happens to be, exactly as asked. `audio` adds the vacuum-mic track if the
+    stream carries one (`0:a:0?` = optional - never fails a video-only flow).
+    `frag_keyframe+empty_moov` interleaves the moov data so the file is
+    already valid even if it is cut short, and is directly streamable.
+    """
+    args = ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", rtsp_url,
+            "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "23", "-pix_fmt", "yuv420p"]
+    if audio:
+        args += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "96k", "-ar", "16000", "-ac", "1"]
+    args += ["-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
+    # stdin stays open so end_clip can send 'q' for a clean finalisation.
+    return subprocess.Popen(
+        args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+    )
+
+
+@app.route("/record/start", methods=["POST"])
+def record_start():
+    """Begin a clip recording of the running stream, to be ended by /record/stop.
+
+    Request: JSON {did, tag?, audio?}. Needs an active stream (its RTSP is
+    what gets recorded). Records deliberately loose: no snapshot name yet,
+    because clips are named from the moment they *finish*, and no classifier
+    runs on a video - the classifier is for photos only.
+    """
+    body = _require_body("did")
+    did = body["did"]
+    tag = _safe_tag(body.get("tag"))
+
+    with _streams_lock:
+        existing = _active_streams.get(did)
+        stream_active = existing is not None and existing["p2p_proc"].poll() is None
+        rtsp_url = existing["rtsp_url"] if stream_active else None
+    if not stream_active or not rtsp_url:
+        return jsonify({
+            "success": False,
+            "error": "No active stream to record - start one (a start_stream "
+                     "step) before recording a clip.",
+        }), 409
+
+    with _recordings_lock:
+        running = _active_recordings.get(did)
+        if running and running["proc"].poll() is None:
+            return jsonify({"success": False, "error": "Already recording a clip for this device"}), 409
+        audio = bool(body.get("audio"))
+        temp_path = os.path.join("/tmp", f"dreame_record_{did}_{int(time.time())}.mp4")
+        proc = _record_ffmpeg(rtsp_url, temp_path, audio)
+        _active_recordings[did] = {
+            "proc": proc, "temp": temp_path, "tag": tag,
+            "audio": audio, "started_at": time.time(),
+        }
+    app.logger.info("/record/start did=%s tag=%s audio=%s rtsp=%s", did, tag, audio, rtsp_url)
+    return jsonify({"success": True, "tag": tag, "audio": audio, "temp": temp_path})
+
+
+@app.route("/record/stop", methods=["POST"])
+def record_stop():
+    """End the clip recording for a did and save it under its tag.
+
+    Stops ffmpeg cleanly (a 'q' on its stdin), then moves the finished
+    fragmented mp4 into `snapshots/<tag>/<ts>.mp4`. No classifier runs here:
+    a video is not a photo and is exempt from classification on purpose.
+    """
+    body = _require_body("did")
+    did = body["did"]
+
+    with _recordings_lock:
+        entry = _active_recordings.pop(did, None)
+    if not entry:
+        return jsonify({"success": False, "error": "No clip is recording for this device"}), 409
+
+    proc = entry["proc"]
+    temp_path = entry["temp"]
+    tag = entry["tag"]
+    try:
+        if proc.poll() is None:
+            try:
+                proc.stdin.write("q\n")
+                proc.stdin.flush()
+            except OSError:
+                pass
+            try:
+                proc.wait(timeout=8)
+            except subprocess.TimeoutExpired:
+                proc.terminate()
+                try:
+                    proc.wait(timeout=5)
+                except subprocess.TimeoutExpired:
+                    proc.kill()
+
+        if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
+            app.logger.warning("/record/stop did=%s produced no file %s", did, temp_path)
+            return jsonify({
+                "success": False,
+                "error": "The recording produced no video - did the stream die mid-clip?",
+            }), 502
+
+        timestamp = time.strftime("%Y%m%d-%H%M%S")
+        snapshot_dir = _snapshot_dir(tag)
+        os.makedirs(snapshot_dir, exist_ok=True)
+        final_name = f"{timestamp}.mp4"
+        final_path = os.path.join(snapshot_dir, final_name)
+        os.replace(temp_path, final_path)
+        elapsed = int(time.time() - entry["started_at"])
+        app.logger.info("/record/stop did=%s -> %s (%ds)", did, final_path, elapsed)
+        return jsonify({
+            "success": True,
+            "path": final_path,
+            "tag": tag,
+            "filename": final_name,
+            "media_path": os.path.relpath(final_path, MEDIA_ROOT),
+            "audio": entry["audio"],
+            "seconds": elapsed,
+        })
+    finally:
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+
+
+@app.route("/record/status", methods=["GET"])
+def record_status():
+    did = request.args.get("did")
+    if not did:
+        abort(400, "Missing required query param: did")
+    with _recordings_lock:
+        entry = _active_recordings.get(did)
+        running = bool(entry and entry["proc"].poll() is None)
+        return jsonify({
+            "running": running,
+            "tag": (entry or {}).get("tag"),
+            "audio": (entry or {}).get("audio"),
+            "started_at": (entry or {}).get("started_at"),
+        })
+
+
 def _classify_snapshot(tag: str, snapshot_path: str) -> list:
     """Report what happened for every classification linked to this tag -
     not just the ones that produced a usable result. The caller (the
@@ -1678,7 +1829,9 @@ def task_calls(slug):
         abort(409, "This vacuum has not registered its entities with the add-on yet")
     try:
         calls = step_schema.to_service_calls(
-            task["steps"], vacuum, request.args.get("stream") or entities.get("stream")
+            task["steps"], vacuum,
+            request.args.get("stream") or entities.get("stream"),
+            request.args.get("speak") or entities.get("speak"),
         )
     except step_schema.StepError as err:
         abort(409, str(err))

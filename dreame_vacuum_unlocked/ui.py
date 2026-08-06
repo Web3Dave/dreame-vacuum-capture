@@ -99,13 +99,20 @@ def _snapshot_index(tag=None, limit=None):
             continue
         shots = []
         for entry in os.listdir(folder):
-            if not entry.lower().endswith(".jpg") or entry == "latest.jpg":
+            lower = entry.lower()
+            if lower.endswith(".jpg"):
+                if entry == "latest.jpg":
+                    continue
+                kind = "photo"
+            elif lower.endswith(".mp4"):
+                kind = "video"
+            else:
                 continue
             try:
                 taken = int(os.stat(os.path.join(folder, entry)).st_mtime)
             except OSError:
                 continue
-            shots.append({"filename": entry, "taken_at": taken})
+            shots.append({"filename": entry, "taken_at": taken, "kind": kind})
         if not shots:
             continue
         shots.sort(key=lambda item: item["taken_at"], reverse=True)
@@ -658,7 +665,7 @@ def api_export_task(slug):
         return jsonify({"error": "This vacuum has not registered its entities yet"}), 409
     try:
         calls = step_schema.to_service_calls(
-            task["steps"], entities["vacuum"], entities.get("stream")
+            task["steps"], entities["vacuum"], entities.get("stream"), entities.get("speak")
         )
     except step_schema.StepError as err:
         return jsonify({"error": str(err)}), 409
@@ -953,15 +960,22 @@ def api_delete_tag(tag_id):
 
 @app.route("/snapshot/<tag>/<filename>")
 def snapshot_image(tag, filename):
-    """Served through Ingress, so Home Assistant has already authenticated the
-    viewer - no token handling needed here."""
+    """Media served through Ingress, so Home Assistant has already
+    authenticated the viewer - no token handling needed here.
+
+    Both the per-tag photos (.jpg) and the recorded clips (.mp4) come from
+    the same folder, so one route serves either. send_file streams ranges, so
+    <video> playback and scrubbing work without the whole file loading.
+    """
     safe = os.path.basename(filename)
-    if not safe.lower().endswith(".jpg"):
+    lower = safe.lower()
+    if not (lower.endswith(".jpg") or lower.endswith(".mp4")):
         abort(404)
     path = os.path.join(SNAPSHOT_ROOT, _safe_tag(tag), safe)
     if not os.path.exists(path):
         abort(404)
-    return send_file(path, mimetype="image/jpeg")
+    mimetype = "video/mp4" if lower.endswith(".mp4") else "image/jpeg"
+    return send_file(path, mimetype=mimetype)
 
 
 @app.route("/activity")
