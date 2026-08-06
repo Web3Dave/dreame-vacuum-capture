@@ -959,23 +959,27 @@ def capture():
 def _record_ffmpeg(rtsp_url, temp_path, audio):
     """An ffmpeg that records the running stream's RTSP to a fragmented mp4.
 
-    Video is always re-encoded to h264 (`libx264`/`yuv420p`, the widest
-    browser + phone compat); the vacuum's RTSP is already h264, but encoding
-    guarantees the delivered file is h264 mp4 regardless of what the source
-    happens to be, exactly as asked. `audio` adds the vacuum-mic track if the
-    stream carries one (`0:a:0?` = optional - never fails a video-only flow).
-    `frag_keyframe+empty_moov` interleaves the moov data so the file is
-    already valid even if it is cut short, and is directly streamable.
+    The stream's RTSP is already h264 video (+ AAC audio when the mic layer is
+    armed), so both streams are *copied* (`-c copy`) into the mp4 rather than
+    re-encoded. That keeps the recording a genuine h264 mp4 while demanding far
+    less CPU than a live libx264 re-encode - a re-encode of a live feed in the
+    same container as the republisher falls behind and drops frames ("reader is
+    too slow, discarding ..." from MediaMTX), which muddies exactly the clip we
+    are trying to capture. `audio` adds an optional `-map 0:a:0?` (never fails a
+    video-only flow). `frag_keyframe+empty_moov` interleaves the moov data so
+    the file is already valid if cut short, and streams over HTTP.
     """
     args = ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", rtsp_url,
-            "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
-            "-crf", "23", "-pix_fmt", "yuv420p"]
+            "-map", "0:v:0", "-c:v", "copy"]
     if audio:
-        args += ["-map", "0:a:0?", "-c:a", "aac", "-b:a", "96k", "-ar", "16000", "-ac", "1"]
+        args += ["-map", "0:a:0?", "-c:a", "copy"]
     args += ["-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
     # stdin stays open so end_clip can send 'q' for a clean finalisation.
+    # text=True: the stdin is how we stop it, and on py3.8 the pipe is binary
+    # by default -> "a bytes-like object is required" (hit live, 2026-08).
     return subprocess.Popen(
-        args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL, text=True,
     )
 
 
@@ -1039,11 +1043,14 @@ def record_stop():
     tag = entry["tag"]
     try:
         if proc.poll() is None:
+            # Best-effort graceful stop; never let a broken pipe/short write
+            # turn a successful recording into a failure, and never guess at
+            # the failure cause. text=True above makes 'q' the right thing.
             try:
                 proc.stdin.write("q\n")
                 proc.stdin.flush()
-            except OSError:
-                pass
+            except Exception:  # noqa: BLE001 - stopping is best-effort
+                app.logger.debug("/record/stop failed to signal ffmpeg for %s", did)
             try:
                 proc.wait(timeout=8)
             except subprocess.TimeoutExpired:
@@ -1055,6 +1062,10 @@ def record_stop():
 
         if not os.path.exists(temp_path) or os.path.getsize(temp_path) == 0:
             app.logger.warning("/record/stop did=%s produced no file %s", did, temp_path)
+            try:
+                os.remove(temp_path)
+            except OSError:
+                pass
             return jsonify({
                 "success": False,
                 "error": "The recording produced no video - did the stream die mid-clip?",
@@ -1077,11 +1088,14 @@ def record_stop():
             "audio": entry["audio"],
             "seconds": elapsed,
         })
-    finally:
-        try:
-            os.remove(temp_path)
-        except OSError:
-            pass
+    except Exception:  # noqa: BLE001
+        # Leave temp_path in place (os.replace moves it on success) so a
+        # finalisation glitch never silently discards the captured footage.
+        app.logger.exception("/record/stop failed for %s (temp %s left for recovery)", did, temp_path)
+        return jsonify({
+            "success": False,
+            "error": "Could not finalise the clip - see the add-on log",
+        }), 502
 
 
 @app.route("/record/status", methods=["GET"])
