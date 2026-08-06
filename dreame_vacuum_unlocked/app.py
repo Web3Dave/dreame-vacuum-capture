@@ -959,17 +959,20 @@ def capture():
 def _record_ffmpeg(rtsp_url, temp_path):
     """An ffmpeg that records the running stream's RTSP to a fragmented mp4.
 
-    The stream's RTSP is already h264 video (+ AAC audio when the mic layer is
-    armed), so both streams are *copied* (`-c copy`) into the mp4 rather than
-    re-encoded - a genuine h264 mp4 with essentially no CPU, and none of the
-    frame drops a live libx264 re-encode causes alongside the republisher.
-    Audio is recorded by default: the optional `-map 0:a:0?` never fails a
-    video-only flow, and the fragmenting mp4 muxer (see below) is always used.
-    `frag_keyframe+empty_moov` interleaves the moov data so the file is already
-    valid if cut short, and streams over HTTP.
+    Video is RE-ENCODED to h264 (`libx264`), audio stream-copied. The mp4 muxer
+    needs the video resolution up-front to write its header, and a live RTSP
+    H.264 feed often presents as `h264, none` (unspecified size) because the
+    SPS/PPS only arrive in-band on the first keyframe - so `-c:v copy` into mp4
+    fails with "Could not write header... incorrect codec parameters" (hit live
+    2026-08). Re-encoding lets ffmpeg decode a real frame, learn the size, then
+    initialise the encoder+muxer, so it always produces a valid h264 mp4.
+    `frag_keyframe+empty_moov` keeps it valid if stopped mid-capture.
+    Audio (`-map 0:a:0?` = optional, so a mic-less stream still records video)
+    is copied straight through - its params are already known.
     """
     args = ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", rtsp_url,
-            "-map", "0:v:0", "-c:v", "copy",
+            "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
+            "-crf", "23", "-pix_fmt", "yuv420p",
             "-map", "0:a:0?", "-c:a", "copy",
             "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
     # stdin stays open so end_clip can send 'q' for a clean finalisation.
