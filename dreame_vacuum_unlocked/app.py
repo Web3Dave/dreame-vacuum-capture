@@ -380,15 +380,21 @@ def write_p2p_config(did, product_id, device_name):
     return config_path
 
 
-def start_p2p_client(did, product_id, device_name, p2p_info, timeout=20):
+def start_p2p_client(did, product_id, device_name, p2p_info, timeout=30):
+    """Start the stream's P2P client. Uses the intercom-capable binary
+    (p2p_intercom) in streaming mode (reads pre-muxed FLV paths from stdin to
+    talk) so video, vacuum-mic downlink and talk all share ONE session - the
+    Stream + Intercom switches only arm/disarm different layers of it.
+
+    Returns (proc, live_url, audio_url, stdin) or (None, None, None, None)."""
     config_path = write_p2p_config(did, product_id, device_name)
     env = dict(os.environ)
     env["XP2P_INFO"] = p2p_info
     proc = subprocess.Popen(
-        [P2P_BINARY, config_path], env=env,
-        stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
+        [P2P_INTERCOM_BINARY, config_path, "-", VOICE_SEND_CMD, "0"],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT, text=True, bufsize=1,
     )
-
     line_q = queue.Queue()
 
     def _reader():
@@ -397,19 +403,13 @@ def start_p2p_client(did, product_id, device_name, p2p_info, timeout=20):
 
     threading.Thread(target=_reader, daemon=True).start()
 
-    live_url = None
-    deadline = time.time() + timeout
-    while time.time() < deadline and live_url is None:
-        try:
-            line = line_q.get(timeout=0.5)
-        except queue.Empty:
-            continue
-        if line.startswith("LIVE_URL:"):
-            url = line.split("LIVE_URL:", 1)[1].strip()
-            if url and url != "(null)":
-                live_url = url
-
-    return proc, live_url
+    tags = _read_stream_tags(line_q, ("LIVE_URL", "AUDIO_URL"), timeout=timeout)
+    live_url = tags.get("LIVE_URL")
+    audio_url = tags.get("AUDIO_URL")
+    if not live_url:
+        proc.terminate()
+        return None, None, None, None, None
+    return proc, live_url, audio_url, proc.stdin, line_q
 
 
 def run_activation(username, password, country, four_digit_code, did):
@@ -432,7 +432,7 @@ def run_activation(username, password, country, four_digit_code, did):
     time.sleep(1)
     p2p_info = get_p2p_info(protocol, did)
 
-    proc, live_url = start_p2p_client(did, product_id, device_name, p2p_info)
+    proc, live_url, audio_url, stdin, line_q = start_p2p_client(did, product_id, device_name, p2p_info)
     if not live_url:
         proc.terminate()
         _safe_disconnect(protocol)
@@ -441,6 +441,9 @@ def run_activation(username, password, country, four_digit_code, did):
         "protocol": protocol,
         "p2p_proc": proc,
         "live_url": live_url,
+        "audio_url": audio_url,
+        "stdin": stdin,
+        "line_q": line_q,
         "session": session,
         "product_id": product_id,
         "device_name": device_name,
@@ -726,10 +729,19 @@ def speak_send():
     else:
         abort(400, "Provide either 'filename' or 'audio'")
 
-    with _audio_streams_lock:
-        entry = _active_audio_streams.get(did)
-    if not entry or entry["p2p_proc"].poll() is not None:
-        abort(409, "No active audio stream for this device - call /speak/start first")
+    # Talk routes through the RUNNING stream's session when one is active and
+    # intercom is armed (video + mic + talk all on one session); otherwise
+    # fall back to a standalone /speak/start session.
+    entry = None
+    with _streams_lock:
+        st = _active_streams.get(did)
+        if st and st["p2p_proc"].poll() is None and st.get("intercom_armed") and st.get("stdin"):
+            entry = {"p2p_proc": st["p2p_proc"], "line_q": st.get("line_q")}
+    if entry is None:
+        with _audio_streams_lock:
+            entry = _active_audio_streams.get(did)
+        if not entry or entry["p2p_proc"].poll() is not None:
+            abort(409, "No active intercom on this device - start it first")
 
     tag = f"{did}_{uuid.uuid4().hex[:8]}"
     try:
@@ -1018,7 +1030,24 @@ def _classify_snapshot(tag: str, snapshot_path: str) -> list:
     return reports
 
 
-def _spawn_ffmpeg_republish(live_url, rtsp_url):
+def _spawn_ffmpeg_republish(live_url, rtsp_url, audio_url=None):
+    if audio_url:
+        # Video + vacuum-mic audio mux. Thread the device mic "live-audio"
+        # feed as an OPTIONAL second input: when the intercom is armed the mic
+        # streams AAC and it rides in the RTSP; when disarmed the video-only
+        # publish continues (optional maps + a non-blocking audio input).
+        return subprocess.Popen(
+            ["ffmpeg", "-y",
+             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+             "-i", live_url,
+             "-rw_timeout", "5000000", "-timeout", "5000000",
+             "-reconnect", "1", "-reconnect_streamed", "1", "-reconnect_delay_max", "2",
+             "-i", audio_url,
+             "-map", "0:v?", "-map", "1:a?",
+             "-c:v", "copy", "-c:a", "copy",
+             "-f", "rtsp", rtsp_url],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+        )
     return subprocess.Popen(
         ["ffmpeg", "-y", "-i", live_url, "-c", "copy", "-f", "rtsp", rtsp_url],
         stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1219,7 +1248,7 @@ def _ffmpeg_watchdog(did, creds):
             # The old MQTT session is superseded - drop it only once the
             # replacement is established, so there's no window with none.
             _safe_disconnect(protocol)
-            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
+            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, act.get("audio_url"))
             last_bytes, last_progress, respawns_without_progress = None, time.time(), 0
             with _streams_lock:
                 current = _active_streams.get(did)
@@ -1230,14 +1259,18 @@ def _ffmpeg_watchdog(did, creds):
                     return
                 current.update({
                     "p2p_proc": act["p2p_proc"], "ffmpeg_proc": new_ffmpeg,
-                    "live_url": act["live_url"], "protocol": act["protocol"],
+                    "live_url": act["live_url"], "audio_url": act.get("audio_url"),
+                    "protocol": act["protocol"], "stdin": act.get("stdin"),
+                    "line_q": act.get("line_q"),
                     "session": act["session"], "product_id": act["product_id"],
                     "device_name": act["device_name"],
                 })
             continue
 
         _kill(ffmpeg_proc)
-        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url)
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url,
+                                             current_stream.get("audio_url")
+                                             if (current_stream := _active_streams.get(did)) else None)
         last_bytes, last_progress = None, time.time()
         respawns_without_progress += 1
 
@@ -1283,13 +1316,17 @@ def stream_start():
     )
 
     rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url)
+    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, act.get("audio_url"))
 
     with _streams_lock:
         _active_streams[did] = {
             "p2p_proc": act["p2p_proc"], "ffmpeg_proc": ffmpeg_proc, "rtsp_url": rtsp_url,
-            "live_url": act["live_url"], "started_at": time.time(), "protocol": act["protocol"],
-            "session": act["session"], "product_id": act["product_id"], "device_name": act["device_name"],
+            "live_url": act["live_url"], "audio_url": act.get("audio_url"),
+            "started_at": time.time(), "protocol": act["protocol"],
+            "session": act["session"], "product_id": act["product_id"],
+            "device_name": act["device_name"], "line_q": act.get("line_q"),
+            "stdin": act.get("stdin"),
+            "intercom_armed": False,
         }
     creds = {
         "username": body["username"], "password": body["password"],
@@ -1315,6 +1352,23 @@ def stream_stop():
     if not entry:
         return jsonify({"success": True, "was_running": False})
 
+    # If the mic/intercom was armed, disarm it before tearing down.
+    if entry.get("intercom_armed"):
+        try:
+            camera_action(
+                entry["protocol"], did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
+                {"session": entry["session"], "operType": "intercom", "operation": "end"},
+            )
+        except Exception:
+            app.logger.warning("stream/stop VOICE_OPERATE end failed", exc_info=True)
+
+    stdout = entry.get("stdin")
+    if stdout:
+        try:
+            stdout.close()
+        except Exception:
+            pass
+
     for proc in (entry["ffmpeg_proc"], entry["p2p_proc"]):
         proc.terminate()
         try:
@@ -1324,6 +1378,41 @@ def stream_stop():
     _safe_disconnect(entry.get("protocol"))
 
     return jsonify({"success": True, "was_running": True})
+
+
+@app.route("/stream/intercom", methods=["POST"])
+def stream_intercom():
+    """Arm/disarm the intercom (vacuum-mic) layer on a RUNNING stream. This is
+    the audio-out toggle: on arms the mic so the live-audio feed flows into the
+    stream's RTSP and talk is enabled; off disarms it. The video stream itself
+    keeps running either way - call /stream/start to (re)open it."""
+    body = _require_body("did", "on")
+    did = body["did"]
+    on = bool(body.get("on"))
+
+    with _streams_lock:
+        entry = _active_streams.get(did)
+        running = bool(entry and entry["p2p_proc"].poll() is None)
+        session = entry["session"] if entry else None
+        protocol = entry["protocol"] if entry else None
+
+    if not running or not session:
+        return jsonify({"success": False, "error": "No running stream to toggle intercom on. Start /stream/start first."}), 409
+
+    operation = "start" if on else "end"
+    resp = camera_action(
+        protocol, did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
+        {"session": session, "operType": "intercom", "operation": operation},
+    )
+    confirmed = False
+    if on:
+        confirmed = _wait_intercom_cloud(protocol, did, session)
+    with _streams_lock:
+        cur = _active_streams.get(did)
+        if cur:
+            cur["intercom_armed"] = confirmed if on else False
+    app.logger.info("stream/intercom %s for %s -> resp=%s confirmed=%s", operation, did, resp, confirmed)
+    return jsonify({"success": True, "intercom_armed": bool(confirmed) if on else False})
 
 
 @app.route("/stream/status", methods=["GET"])
@@ -1338,7 +1427,8 @@ def stream_status():
         # being able to start one: /stream/start is the only way to open a
         # camera session on the device.
         rtsp_url = entry["rtsp_url"] if running else None
-    return jsonify({"running": running, "rtsp_url": rtsp_url})
+        intercom = bool(entry.get("intercom_armed")) if entry else False
+    return jsonify({"running": running, "rtsp_url": rtsp_url, "intercom_armed": intercom})
 
 
 @app.route("/latest.jpg", methods=["GET"])
