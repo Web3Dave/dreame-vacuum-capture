@@ -975,9 +975,12 @@ def _record_ffmpeg(rtsp_url, temp_path):
     # stdin stays open so end_clip can send 'q' for a clean finalisation.
     # text=True: the stdin is how we stop it, and on py3.8 the pipe is binary
     # by default -> "a bytes-like object is required" (hit live, 2026-08).
+    # stderr is left INHERITED (not DEVNULL): ffmpeg's own error text goes to
+    # the add-on log, which is the only way to see why a recording produced no
+    # file (a silenced stderr made that diagnosis blind, 2026-08).
     return subprocess.Popen(
         args, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL, text=True,
+        stderr=None, text=True,
     )
 
 
@@ -1004,6 +1007,25 @@ def record_start():
             "error": "No active stream to record - start one (a start_stream "
                      "step) before recording a clip.",
         }), 409
+
+    # Arming intercom (the mic) at task start respawns the republish
+    # publisher, and MediaMTX terminates connected readers when a publisher is
+    # replaced. A recorder that connects into that gap captures nothing and is
+    # torn down with the old publisher. So wait until the MediaMTX path
+    # actually has a live publisher before spawning ffmpeg, instead of racing
+    # the respawn.
+    publishing = None
+    deadline = time.time() + 15
+    while time.time() < deadline:
+        publishing = _path_inbound_bytes(did)
+        if publishing is not None:
+            break
+        time.sleep(0.5)
+    if publishing is None:
+        app.logger.warning(
+            "/record/start did=%s no MediaMTX publisher seen yet - recording may produce nothing",
+            did,
+        )
 
     with _recordings_lock:
         running = _active_recordings.get(did)
