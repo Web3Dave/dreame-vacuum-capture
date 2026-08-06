@@ -655,11 +655,16 @@ def speak_start():
         audio_url = tags.get("AUDIO_URL")
         if live_url and audio_url:
             rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
+            # Mux video + mic audio, but tolerate the mic dropping out:
+            # optional maps (?'suffix) mean the RTSP still publishes video-only
+            # whenever the live-audio feed has no packet, and `-c:a copy` avoids
+            # fragile re-encoding (the mic downlink is already AAC). This keeps
+            # the camera stream reliable even if intercom audio flickers.
             rtsp_proc = subprocess.Popen(
                 ["ffmpeg", "-y",
                  "-i", live_url, "-i", audio_url,
-                 "-map", "0:v", "-map", "1:a",
-                 "-c:v", "copy", "-c:a", "aac",
+                 "-map", "0:v?", "-map", "1:a?",
+                 "-c:v", "copy", "-c:a", "copy",
                  "-f", "rtsp", rtsp_url],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             )
