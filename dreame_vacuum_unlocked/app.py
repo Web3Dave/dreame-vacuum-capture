@@ -987,6 +987,66 @@ def _record_ffmpeg(rtsp_url, temp_path):
     )
 
 
+def _start_recording(did, rtsp_url, temp_path):
+    """Keep launching the recorder until one actually captures frames.
+
+    A freshly-opened stream is unstable for its first few seconds: arming the
+    mic (intercom) respawns the republish publisher, and MediaMTX terminates
+    every connected reader when a publisher is replaced. A recorder that lands
+    in that window is torn down with the old publisher before it captures
+    anything ('Cannot determine format of input stream 0:0 after EOF' /
+    'Error marking filters as finished'). Once the transition settles the
+    publisher is stable. So try repeatedly, keeping only an attempt that is
+    still alive AND producing bytes past a short grace period - then end_clip
+    finalises that surviving capture. Returns the live Popen, or None if the
+    stream never stabilised.
+    """
+    for attempt in range(5):
+        proc = _record_ffmpeg(rtsp_url, temp_path)
+        produced = False
+        size = 0
+        deadline = time.time() + 5
+        while time.time() < deadline:
+            if proc.poll() is not None:
+                break  # died (torn down by a publisher respawn, or SPS never arrived)
+            size = 0
+            try:
+                if os.path.exists(temp_path):
+                    size = os.path.getsize(temp_path)
+            except OSError:
+                pass
+            if size > 0:
+                produced = True
+                break
+            time.sleep(0.5)
+        if produced:
+            app.logger.info(
+                "/record/start did=%s recorder attempt %d stable (temp %s bytes=%d)",
+                did, attempt + 1, temp_path, size,
+            )
+            return proc
+        # This attempt produced nothing - tear it down and try again the moment
+        # the stream looks like it might have settled.
+        app.logger.warning(
+            "/record/start did=%s recorder attempt %d died without frames; retrying",
+            did, attempt + 1,
+        )
+        try:
+            proc.terminate()
+            proc.wait(timeout=3)
+        except Exception:  # noqa: BLE001
+            try:
+                proc.kill()
+            except Exception:  # noqa: BLE001
+                pass
+        try:
+            os.remove(temp_path)
+        except OSError:
+            pass
+        time.sleep(1)
+    return None
+
+
 @app.route("/record/start", methods=["POST"])
 def record_start():
     """Begin a clip recording of the running stream, to be ended by /record/stop.
@@ -1041,7 +1101,19 @@ def record_start():
         # `.part` suffix is not a media extension, so a stray copy from an
         # abandoned recording is invisible to the Tags index.
         temp_path = os.path.join(MEDIA_ROOT, f".record-{did}-{int(time.time())}.part")
-        proc = _record_ffmpeg(rtsp_url, temp_path)
+
+    # Keep launching until one actually captures (the freshly-opened stream
+    # tears down readers during the intercom publisher respawn - see
+    # _start_recording). Only report success once a recorder is stable.
+    proc = _start_recording(did, rtsp_url, temp_path)
+    if proc is None:
+        return jsonify({
+            "success": False,
+            "error": "Could not start a stable recording - the stream kept "
+                     "tearing the recorder down. See the add-on log.",
+        }), 502
+
+    with _recordings_lock:
         _active_recordings[did] = {
             "proc": proc, "temp": temp_path, "tag": tag,
             "audio": True, "started_at": time.time(),
