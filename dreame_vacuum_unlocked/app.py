@@ -1248,7 +1248,11 @@ def _ffmpeg_watchdog(did, creds):
             # The old MQTT session is superseded - drop it only once the
             # replacement is established, so there's no window with none.
             _safe_disconnect(protocol)
-            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, act.get("audio_url"))
+            # A fresh session means a fresh p2p handle - intercom (VOICE_OPERATE)
+            # was armed against the OLD session and does not carry over, so the
+            # mic leg starts back up video-only. Re-toggling the Intercom
+            # switch re-arms it (and respawns ffmpeg WITH audio) properly.
+            new_ffmpeg = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, None)
             last_bytes, last_progress, respawns_without_progress = None, time.time(), 0
             with _streams_lock:
                 current = _active_streams.get(did)
@@ -1264,13 +1268,18 @@ def _ffmpeg_watchdog(did, creds):
                     "line_q": act.get("line_q"),
                     "session": act["session"], "product_id": act["product_id"],
                     "device_name": act["device_name"],
+                    "intercom_armed": False,
                 })
             continue
 
         _kill(ffmpeg_proc)
-        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url,
-                                             current_stream.get("audio_url")
-                                             if (current_stream := _active_streams.get(did)) else None)
+        with _streams_lock:
+            current_stream = _active_streams.get(did)
+            respawn_audio_url = (
+                current_stream.get("audio_url")
+                if current_stream and current_stream.get("intercom_armed") else None
+            )
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url, respawn_audio_url)
         last_bytes, last_progress = None, time.time()
         respawns_without_progress += 1
 
@@ -1316,7 +1325,12 @@ def stream_start():
     )
 
     rtsp_url = f"rtsp://127.0.0.1:{RTSP_HOST_PORT}/{did}"
-    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, act.get("audio_url"))
+    # Video-only at start: the mic (live-audio) feed carries no real data
+    # until intercom is armed, so an ffmpeg input opened against it now would
+    # sit dead/reconnecting for the life of the process - /stream/intercom
+    # respawns ffmpeg WITH the audio leg once the mic is actually confirmed
+    # armed and flowing.
+    ffmpeg_proc = _spawn_ffmpeg_republish(act["live_url"], rtsp_url, None)
 
     with _streams_lock:
         _active_streams[did] = {
@@ -1407,12 +1421,41 @@ def stream_intercom():
     confirmed = False
     if on:
         confirmed = _wait_intercom_cloud(protocol, did, session)
+    armed = confirmed if on else False
+    app.logger.info("stream/intercom %s for %s -> resp=%s confirmed=%s", operation, did, resp, confirmed)
+
+    # The mic (live-audio) feed only carries real data once armed like this -
+    # ffmpeg's audio input has to be opened (or dropped) fresh right now, not
+    # left over from whatever state it was in when the stream first started.
+    # Without this respawn, arming later never picks up the now-live feed
+    # (input was already dead/timed-out), and disarming leaves a permanently
+    # dead second input in place - both were observed to eventually destabilize
+    # the whole two-input mux and take the video leg down with it.
     with _streams_lock:
         cur = _active_streams.get(did)
         if cur:
-            cur["intercom_armed"] = confirmed if on else False
-    app.logger.info("stream/intercom %s for %s -> resp=%s confirmed=%s", operation, did, resp, confirmed)
-    return jsonify({"success": True, "intercom_armed": bool(confirmed) if on else False})
+            cur["intercom_armed"] = armed
+            old_ffmpeg = cur["ffmpeg_proc"]
+            live_url, rtsp_url = cur["live_url"], cur["rtsp_url"]
+            audio_url = cur.get("audio_url") if armed else None
+        else:
+            old_ffmpeg = None
+
+    if old_ffmpeg is not None:
+        # Kill before spawning the replacement (outside the lock - this can
+        # block up to 5s): MediaMTX only accepts one publisher per path, so a
+        # brief overlap would make the new ffmpeg fail to publish rather than
+        # take over cleanly.
+        _kill(old_ffmpeg)
+        new_ffmpeg = _spawn_ffmpeg_republish(live_url, rtsp_url, audio_url)
+        with _streams_lock:
+            cur = _active_streams.get(did)
+            if cur is None or cur["p2p_proc"].poll() is not None:
+                new_ffmpeg.terminate()
+            else:
+                cur["ffmpeg_proc"] = new_ffmpeg
+
+    return jsonify({"success": True, "intercom_armed": armed})
 
 
 @app.route("/stream/status", methods=["GET"])
