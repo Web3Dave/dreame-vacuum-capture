@@ -56,6 +56,7 @@ import steps as step_schema
 import config_store
 import store
 from dreame_lib.protocol import DreameVacuumProtocol
+from dreame_lib import flv_audio
 from dreame_sign import sign_params
 
 OPTIONS_PATH = "/data/options.json"
@@ -106,6 +107,16 @@ PIID_STREAM_CODE_OPEN = 1100
 PIID_STREAM_VERIFY_CODE = 1102
 PIID_STREAM_VIDEO_TRIGGER = 1
 
+# Monitor.startVoice / VOICE_OPERATE - arms/disarms talk-back on a device
+# that already has an active monitor (video) session. See _read_monitor_audio.
+AIID_VOICE_OPERATE = 2
+PIID_VOICE_OPERATE = 2
+
+# The runSendService params string the real app sends when arming the voice
+# send channel (Command.getTwoWayRadio(channel) in the app's RN bridge) -
+# confirmed byte-for-byte against a live capture of the app's own traffic.
+VOICE_SEND_CMD = "channel=0"
+
 app = Flask(__name__)
 os.makedirs(MEDIA_ROOT, exist_ok=True)
 os.makedirs(AUDIO_ROOT, exist_ok=True)
@@ -113,6 +124,11 @@ os.makedirs(AUDIO_ROOT, exist_ok=True)
 # did -> {"p2p_proc": Popen, "ffmpeg_proc": Popen, "live_url": str}
 _active_streams = {}
 _streams_lock = threading.Lock()
+
+# did -> {"p2p_proc": Popen (stdin=PIPE, stream mode), "protocol", "session",
+#         "product_id", "device_name", "started_at", "line_q": Queue}
+_active_audio_streams = {}
+_audio_streams_lock = threading.Lock()
 
 
 def _addon_options():
@@ -440,18 +456,51 @@ def _safe_disconnect(protocol):
         app.logger.warning("Failed to cleanly disconnect protocol/MQTT session", exc_info=True)
 
 
+AUDIO_EXTS = (".mp3",)
+
+
+def _safe_audio_name(value):
+    """Keep the file name within AUDIO_ROOT - never allow path traversal.
+    Kept in sync with ui.py's copy (separate process, same directory)."""
+    name = os.path.basename((value or "").strip())
+    if not name or not name.lower().endswith(AUDIO_EXTS):
+        raise ValueError("Not an mp3 file name")
+    return "".join(c if (c.isalnum() or c in " ._-") else "_" for c in name)
+
+
+def _mux_audio_to_flv(audio_bytes, tag):
+    """Any ffmpeg-readable audio bytes -> a temp .flv file muxed exactly like
+    the app's own AudioRecordUtil/PCMEncoder/FLVPacker pipeline (AAC-LC,
+    16kHz, mono; see dreame_lib/flv_audio.py). Caller owns cleanup."""
+    src_path = f"/tmp/speak_src_{tag}"
+    flv_path = f"/tmp/speak_{tag}.flv"
+    with open(src_path, "wb") as fh:
+        fh.write(audio_bytes)
+    try:
+        n = flv_audio.build_send_file(src_path, flv_path)
+        app.logger.info("muxed %d bytes -> %s (%d FLV packets)", len(audio_bytes), flv_path, n)
+    finally:
+        try:
+            os.remove(src_path)
+        except OSError:
+            pass
+    return flv_path
+
+
 @app.route("/speak", methods=["POST"])
 def speak():
-    """Stream raw audio bytes to the vacuum's speaker over the XP2P
-    talk-back (voice intercom) channel.
+    """One-shot: stream audio to the vacuum's speaker over the XP2P
+    talk-back (voice intercom) channel, then close the channel again.
 
-    Request: JSON {username, password, country?, four_digit_code, did} with
-    the raw audio (in whatever codec the device's speaker expects) as the
-    request body. The caller transcodes the mp3 -> codec -> raw bytes first.
+    Request: JSON {username, password, country?, four_digit_code, did,
+    audio} - `audio` is base64-encoded bytes of ANY ffmpeg-readable audio
+    format (mp3, wav, ...); this endpoint transcodes/muxes it to the exact
+    AAC-LC/16kHz/mono FLV container the device's speaker expects.
 
     Wires up the same login -> identity -> PIN camera session -> p2p_info
-    chain the live camera uses, then hands the audio to the `p2p_speak`
-    binary which opens the SDK's send-voice service and pushes the bytes.
+    chain the live camera uses, then hands the muxed audio to the
+    `p2p_intercom` binary which opens the SDK's send-voice service and
+    pushes it tag-by-tag.
     """
     body = _require_body("username", "password", "four_digit_code", "did", "audio")
     did = body["did"]
@@ -473,7 +522,7 @@ def speak():
         # arms talk-back and echoes that session back on 10001.2 when it matches
         # the active monitor session. Sending it without a session never arms it.
         start_voice = camera_action(
-            protocol, did, 2, 2,
+            protocol, did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
             {"session": session, "operType": "intercom", "operation": "start"},
         )
         app.logger.info("/speak VOICE_OPERATE start(session=%s) -> %s", session, start_voice)
@@ -485,16 +534,18 @@ def speak():
         raise
 
     config_path = write_p2p_config(did, product_id, device_name)
-    raw_path = f"/tmp/speak_{did}.raw"
-    with open(raw_path, "wb") as fh:
-        fh.write(audio)
+    try:
+        flv_path = _mux_audio_to_flv(audio, did)
+    except Exception as err:
+        _safe_disconnect(protocol)
+        abort(400, f"Could not mux audio (is it a valid audio file?): {err}")
 
     env = dict(os.environ)
     env["XP2P_INFO"] = p2p_info
     timeout = 120
     try:
         result = subprocess.run(
-            [P2P_INTERCOM_BINARY, config_path, raw_path, body.get("cmd", "action=voice"), body.get("crypto", "0")],
+            [P2P_INTERCOM_BINARY, config_path, flv_path, body.get("cmd", VOICE_SEND_CMD), body.get("crypto", "0")],
             env=env, capture_output=True, text=True, timeout=timeout,
         )
         output = (result.stdout or "") + (result.stderr or "")
@@ -507,17 +558,210 @@ def speak():
             "output": output[-4000:],
         })
     except subprocess.TimeoutExpired:
-        return jsonify({"success": False, "error": f"p2p_speak timed out after {timeout}s"})
+        return jsonify({"success": False, "error": f"p2p_intercom timed out after {timeout}s"})
     finally:
+        try:
+            os.remove(flv_path)
+        except OSError:
+            pass
         # Leave intercom mode (with the same session it was entered with).
         try:
             camera_action(
-                protocol, did, 2, 2,
+                protocol, did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
                 {"session": session, "operType": "intercom", "operation": "end"},
             )
         except Exception:
             app.logger.warning("/speak VOICE_OPERATE end failed", exc_info=True)
         _safe_disconnect(protocol)
+
+
+@app.route("/speak/start", methods=["POST"])
+def speak_start():
+    """Open a persistent talk-back session: arm intercom, open the p2p send
+    channel, and keep it open (backed by `p2p_intercom` in streaming mode,
+    reading file paths from stdin) so multiple clips can be pushed with
+    /speak/send without re-arming intercom between each one. Mirrors
+    /stream/start's shape."""
+    body = _require_body("username", "password", "four_digit_code", "did")
+    did = body["did"]
+
+    with _audio_streams_lock:
+        existing = _active_audio_streams.get(did)
+        if existing and existing["p2p_proc"].poll() is None:
+            return jsonify({"success": True, "already_running": True})
+
+    protocol = login(body["username"], body["password"], body.get("country", "eu"))
+    try:
+        connect_device(protocol, did)
+        product_id, device_name = get_identity(protocol, did)
+        session = start_camera_session(protocol, did, body["four_digit_code"], product_id, device_name)
+        start_voice = camera_action(
+            protocol, did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
+            {"session": session, "operType": "intercom", "operation": "start"},
+        )
+        app.logger.info("/speak/start VOICE_OPERATE start(session=%s) -> %s", session, start_voice)
+        confirmed = _wait_intercom_cloud(protocol, did, session)
+        app.logger.info("/speak/start intercom confirmed=%s", confirmed)
+        p2p_info = get_p2p_info(protocol, did)
+    except Exception:
+        _safe_disconnect(protocol)
+        raise
+
+    config_path = write_p2p_config(did, product_id, device_name)
+    env = dict(os.environ)
+    env["XP2P_INFO"] = p2p_info
+    proc = subprocess.Popen(
+        [P2P_INTERCOM_BINARY, config_path, "-", body.get("cmd", VOICE_SEND_CMD), body.get("crypto", "0")],
+        env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+        text=True, bufsize=1,
+    )
+    line_q = queue.Queue()
+
+    def _reader():
+        for line in proc.stdout:
+            line_q.put(line)
+
+    threading.Thread(target=_reader, daemon=True).start()
+
+    with _audio_streams_lock:
+        _active_audio_streams[did] = {
+            "p2p_proc": proc, "protocol": protocol, "session": session,
+            "product_id": product_id, "device_name": device_name,
+            "started_at": time.time(), "line_q": line_q,
+        }
+
+    return jsonify({"success": True, "intercom_confirmed": confirmed})
+
+
+@app.route("/speak/send", methods=["POST"])
+def speak_send():
+    """Push one clip through an already-open talk-back session (see
+    /speak/start). Request: JSON {did, filename} to send a clip already
+    uploaded to the add-on's audio library (AUDIO_ROOT - what the UI's Audio
+    page shows), or JSON {did, audio} (base64, any ffmpeg-readable format) to
+    send bytes directly. Reuses the open channel instead of re-arming
+    intercom - only one of `filename`/`audio` is required."""
+    body = _require_body("did")
+    did = body["did"]
+
+    audio_size_hint = 0
+    if body.get("filename"):
+        try:
+            safe = _safe_audio_name(body["filename"])
+        except ValueError as err:
+            abort(400, str(err))
+        src_path = os.path.join(AUDIO_ROOT, safe)
+        if not os.path.isfile(src_path):
+            abort(404, f"No such clip: {safe}")
+        audio_size_hint = os.path.getsize(src_path)
+        mux_input = ("path", src_path)
+    elif body.get("audio"):
+        try:
+            audio = base64.b64decode(body["audio"])
+        except Exception:
+            abort(400, "audio field must be base64")
+        if not audio:
+            abort(400, "Empty audio body")
+        audio_size_hint = len(audio)
+        mux_input = ("bytes", audio)
+    else:
+        abort(400, "Provide either 'filename' or 'audio'")
+
+    with _audio_streams_lock:
+        entry = _active_audio_streams.get(did)
+    if not entry or entry["p2p_proc"].poll() is not None:
+        abort(409, "No active audio stream for this device - call /speak/start first")
+
+    tag = f"{did}_{uuid.uuid4().hex[:8]}"
+    try:
+        if mux_input[0] == "path":
+            flv_path = f"/tmp/speak_{tag}.flv"
+            flv_audio.build_send_file(mux_input[1], flv_path)
+        else:
+            flv_path = _mux_audio_to_flv(mux_input[1], tag)
+    except Exception as err:
+        abort(400, f"Could not mux audio (is it a valid audio file?): {err}")
+
+    proc = entry["p2p_proc"]
+    proc.stdin.write(flv_path + "\n")
+    proc.stdin.flush()
+
+    # Wait for the matching "SENT <flv_path> rc=<n>" line so the caller
+    # knows the clip actually finished before deciding whether to /speak/stop.
+    timeout = max(10.0, audio_size_hint / 4000.0)  # rough floor scaled to clip size
+    deadline = time.time() + timeout
+    rc = None
+    while time.time() < deadline:
+        try:
+            line = entry["line_q"].get(timeout=0.5)
+        except queue.Empty:
+            if proc.poll() is not None:
+                break
+            continue
+        if line.startswith("SENT ") and flv_path in line:
+            try:
+                rc = int(line.strip().rsplit("rc=", 1)[1])
+            except (IndexError, ValueError):
+                rc = -1
+            break
+
+    try:
+        os.remove(flv_path)
+    except OSError:
+        pass
+
+    if rc is None:
+        return jsonify({"success": False, "error": f"timed out after {timeout:.0f}s waiting for send confirmation"})
+    return jsonify({"success": rc == 0, "returncode": rc, "audio_bytes": audio_size_hint})
+
+
+@app.route("/speak/stop", methods=["POST"])
+def speak_stop():
+    """Close a talk-back session opened by /speak/start. Mirrors
+    /stream/stop's shape."""
+    body = _require_body("did")
+    did = body["did"]
+
+    with _audio_streams_lock:
+        entry = _active_audio_streams.pop(did, None)
+
+    if not entry:
+        return jsonify({"success": True, "was_running": False})
+
+    proc = entry["p2p_proc"]
+    try:
+        if proc.poll() is None:
+            proc.stdin.write("STOP\n")
+            proc.stdin.flush()
+        proc.wait(timeout=5)
+    except Exception:
+        proc.terminate()
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            proc.kill()
+
+    try:
+        camera_action(
+            entry["protocol"], did, AIID_VOICE_OPERATE, PIID_VOICE_OPERATE,
+            {"session": entry["session"], "operType": "intercom", "operation": "end"},
+        )
+    except Exception:
+        app.logger.warning("/speak/stop VOICE_OPERATE end failed", exc_info=True)
+    _safe_disconnect(entry.get("protocol"))
+
+    return jsonify({"success": True, "was_running": True})
+
+
+@app.route("/speak/status", methods=["GET"])
+def speak_status():
+    did = request.args.get("did")
+    if not did:
+        abort(400, "Missing required query param: did")
+    with _audio_streams_lock:
+        entry = _active_audio_streams.get(did)
+        running = bool(entry and entry["p2p_proc"].poll() is None)
+    return jsonify({"running": running})
 
 
 @app.route("/devices", methods=["POST"])

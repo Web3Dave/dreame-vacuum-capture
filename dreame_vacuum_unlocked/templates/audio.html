@@ -52,7 +52,12 @@
     .row .name { flex:1; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
     .hint { color:var(--muted); font-size:13px; }
     .err { color:var(--bad); font-size:13px; }
+    .ok { color:var(--ok); font-size:13px; }
     audio { height:34px; }
+    select { font:inherit; font-size:14px; padding:7px 10px; border-radius:8px;
+              border:1px solid var(--line); background:var(--card); color:var(--text); }
+    button.mini.primary { color:#fff; background:var(--accent); border-color:var(--accent); }
+    button.mini[disabled] { opacity:.6; cursor:default; }
   </style>
 </head>
 <body>
@@ -86,6 +91,11 @@
     <span class="hint">Upload your mp3 clips here; they become options in Custom voice.</span>
   </div>
 
+  <div class="upload-bar">
+    <select id="device"><option value="">Loading devices...</option></select>
+    <span class="hint">Device to target with "Send to vacuum" below.</span>
+  </div>
+
   <div class="card">
     <div id="rows"><span class="hint">Loading\u2026</span></div>
   </div>
@@ -112,10 +122,14 @@
           <div class="row">
             <div class="name">${esc(f)}</div>
             <audio controls preload="none" src="${BASE}/api/audio/${encodeURIComponent(f)}"></audio>
+            <button class="mini primary" data-send="${encodeURIComponent(f)}">Send to vacuum</button>
             <button class="mini danger" data-del="${encodeURIComponent(f)}">Delete</button>
           </div>`).join("");
         wrap.querySelectorAll("[data-del]").forEach((b) => {
           b.addEventListener("click", () => del(decodeURIComponent(b.dataset.del), b));
+        });
+        wrap.querySelectorAll("[data-send]").forEach((b) => {
+          b.addEventListener("click", () => send(decodeURIComponent(b.dataset.send), b));
         });
       } catch (e) {
         $("rows").innerHTML = `<span class="err">Could not list audio: ${esc(e.message || e)}</span>`;
@@ -131,6 +145,53 @@
         if (body.ok) { status("Deleted " + name); load(); }
         else { status("Delete failed: " + (body.error || res.status)); btn.disabled = false; }
       } catch (e) { status("Delete failed: " + (e.message || e)); btn.disabled = false; }
+    }
+
+    async function loadDevices() {
+      try {
+        const res = await fetch(`${BASE}/api/devices`);
+        const body = await res.json().catch(() => ({}));
+        const devices = body.devices || [];
+        const select = $("device");
+        if (!devices.length) {
+          select.innerHTML = `<option value="">No devices registered yet</option>`;
+          return;
+        }
+        select.innerHTML = devices.map((d) =>
+          `<option value="${esc(d.did)}">${esc(d.name || d.did)}</option>`).join("");
+      } catch (e) {
+        $("device").innerHTML = `<option value="">Could not load devices</option>`;
+      }
+    }
+
+    async function send(name, btn) {
+      const did = $("device").value;
+      if (!did) { status("Pick a device first"); return; }
+      const originalText = btn.textContent;
+      btn.disabled = true;
+      btn.textContent = "Sending…";
+      status("");
+      try {
+        const res = await fetch(`${BASE}/api/audio/${encodeURIComponent(name)}/send`, {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ did }),
+        });
+        const body = await res.json().catch(() => ({}));
+        if (body.ok) {
+          $("status").className = "ok";
+          status("Sent " + name + " to the vacuum");
+        } else {
+          $("status").className = "err";
+          status("Send failed: " + (body.detail || body.error || res.status));
+        }
+      } catch (e) {
+        $("status").className = "err";
+        status("Send failed: " + (e.message || e));
+      } finally {
+        btn.disabled = false;
+        btn.textContent = originalText;
+      }
     }
 
     $("upload-btn").addEventListener("click", () => $("file").click());
@@ -167,6 +228,7 @@
     })();
 
     load();
+    loadDevices();
   </script>
 </body>
 </html>

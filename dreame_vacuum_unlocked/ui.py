@@ -1162,6 +1162,34 @@ def api_audio_delete(name):
     return jsonify({"ok": True, "name": safe})
 
 
+@app.route("/api/audio/<name>/send", methods=["POST"])
+def api_audio_send(name):
+    """Push an uploaded clip to the vacuum's speaker right now: converts it
+    to the codec/container the speaker expects, opens the talk-back channel
+    if it isn't already open, streams the clip, and closes the channel again
+    (unless it was already open, in which case it's left open) - see the
+    `play_audio_clip` service in the integration, which owns the account
+    credentials this add-on's own UI doesn't have access to."""
+    try:
+        safe = _safe_audio_name(name)
+    except ValueError:
+        return jsonify({"ok": False, "error": "Invalid file name"}), 400
+    if not os.path.isfile(os.path.join(AUDIO_ROOT, safe)):
+        return jsonify({"ok": False, "error": "No such clip"}), 404
+
+    body = request.get_json(silent=True) or {}
+    did = body.get("did")
+    entity = _vacuum_entity(did)
+    if not entity:
+        return jsonify({"ok": False, "error": "No vacuum entity registered for this device"}), 400
+
+    ok, detail = ha_client.call_service_result(
+        "dreame_vacuum_unlocked_integration", "play_audio_clip",
+        {"entity_id": entity, "filename": safe}, timeout=60,
+    )
+    return jsonify({"ok": ok, "detail": detail}), (200 if ok else 502)
+
+
 def _build_voice_pack(selections: dict) -> str | None:
     """Convert each selected mp3 to <tts-id>.ogg (Ogg Vorbis, 16k mono, libvorbis)
     and assemble them into a flat gzip-tar at AUDIO_ROOT/upload.tar.gz.
