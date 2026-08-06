@@ -664,9 +664,7 @@ def api_export_task(slug):
     if not entities.get("vacuum"):
         return jsonify({"error": "This vacuum has not registered its entities yet"}), 409
     try:
-        calls = step_schema.to_service_calls(
-            task["steps"], entities["vacuum"], entities.get("stream"), entities.get("speak")
-        )
+        calls = step_schema.to_service_calls(task["steps"], entities["vacuum"])
     except step_schema.StepError as err:
         return jsonify({"error": str(err)}), 409
     return jsonify({"yaml": _script_yaml(task, calls)})

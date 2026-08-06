@@ -21,34 +21,15 @@ import json
 
 # Each field: (name, type, required, default, help)
 STEP_TYPES = {
-    "start_stream": {
-        "label": "Start camera stream",
-        "help": "Holds one camera session open. Keeps turns silent and lets "
-                "snapshots come off the live feed.",
-        "fields": [
-            ("audio", "bool", False, False,
-             "Also stream sound from the vacuum's mic (arms the intercom), "
-             "so clips recorded with sound capture it"),
-        ],
-        "service": ("switch", "turn_on"),
-    },
-    "stop_stream": {
-        "label": "Stop camera stream",
-        "help": "Releases the camera so the phone app can use it again.",
-        "fields": [],
-        "service": ("switch", "turn_off"),
-    },
     "record_clip": {
         "label": "Record clip",
         "help": "Start recording from the camera's live stream into a video "
-                "clip. Must be followed by an 'End clip' step, which stops "
-                "and saves it as an h264 mp4 under this step's tag.",
+                "clip. Sound is recorded by default. Must be followed by an "
+                "'End clip' step, which stops and saves it as an h264 mp4 "
+                "under this step's tag.",
         "fields": [
             ("tag", "str", False, "general",
              "Groups clips alongside snapshots, e.g. poop_check"),
-            ("audio", "bool", False, False,
-             "Also record the vacuum's mic into the clip - needs the stream "
-             "to have sound (a start_stream with the audio option)"),
         ],
         "service": ("dreame_vacuum_unlocked_integration", "record_clip"),
     },
@@ -199,35 +180,18 @@ def validate_steps(steps):
 
 
 def _validate_pairings(steps):
-    """Resources that are turned on must be turned off within the same task.
+    """Resources opened by a step must be closed by another step.
 
-    A stream left open holds the device's single camera session forever -
-    the phone app can't use it until something closes the task. A recording
-    left running ('record_clip' with no 'end_clip') would grow on disk until
-    it fills the card. Both are structural mistakes that show up as soon as
-    the steps are read, so catch them here rather than hours later behind a
-    running task.
+    A recording left running ('record_clip' with no 'end_clip') would grow on
+    disk until it fills the card. Catching that here rather than hours later
+    behind a running task keeps the mistake cheap. The camera stream is NOT
+    in this list: the task runner opens and closes it around the whole task,
+    so no step has to.
     """
-    open_streams = 0
     open_clips = 0
     for i, step in enumerate(steps):
         kind = step["type"]
-        if kind == "start_stream":
-            if open_streams:
-                raise StepError(
-                    f"Step {i + 1} (start_stream): a stream is already running "
-                    "from an earlier step - add a stop_stream step first (the "
-                    "vacuum only allows one camera session at a time)"
-                )
-            open_streams += 1
-        elif kind == "stop_stream":
-            if open_streams == 0:
-                raise StepError(
-                    f"Step {i + 1} (stop_stream): there is no stream running "
-                    "to stop - a stop_stream must follow a start_stream step"
-                )
-            open_streams -= 1
-        elif kind == "record_clip":
+        if kind == "record_clip":
             if open_clips:
                 raise StepError(
                     f"Step {i + 1} (record_clip): a clip is already recording "
@@ -242,11 +206,6 @@ def _validate_pairings(steps):
                     "to end - an end_clip must follow a record_clip step"
                 )
             open_clips -= 1
-    if open_streams:
-        raise StepError(
-            "A start_stream step has no matching stop_stream - a stream left "
-            "open holds the camera. Add a stop_stream to the end of the task."
-        )
     if open_clips:
         raise StepError(
             "A record_clip step has no matching end_clip - the recording "
@@ -266,58 +225,24 @@ def describe(step):
     return f"{label}" + (f" ({detail})" if detail else "")
 
 
-def to_service_calls(steps, entity_id, stream_switch=None, intercom_switch=None):
+def to_service_calls(steps, entity_id):
     """Steps as Home Assistant service calls, ready to export or execute.
 
-    `use_camera_session: false` is written out on any turn that happens while a
-    stream is open, so the exported script behaves exactly as the task does.
-
-    A `start_stream` with `audio` also turns on the intercom switch (the
-    vacuum-mic layer), so the stream carries sound for downstream clips - and
-    the exported script reads back as exactly the two switches a task that
-    streams sound actually flips.
+    `use_camera_session: false` is written out on every turn: the task runner
+    holds one camera stream open for the whole task (opening and closing it
+    around the steps), so a turn must never try to open its own second session.
     """
     calls = []
-    streaming = False
     for step in steps:
         kind = step["type"]
         domain, service = STEP_TYPES[kind]["service"]
         data = {k: v for k, v in step.items() if k != "type"}
-        target = entity_id
 
-        if kind == "start_stream":
-            if not stream_switch:
-                raise StepError(
-                    "'start_stream' needs the vacuum's stream switch, which this "
-                    "device has not reported - is the camera set up?"
-                )
-            # `audio` is dropped from the switch data: switch.turn_on has no
-            # such attribute. Sound is armed as its own switch instead.
-            calls.append({"action": "switch.turn_on", "target": {"entity_id": stream_switch}})
-            streaming = True
-            if step.get("audio"):
-                if not intercom_switch:
-                    raise StepError(
-                        "start_stream with its audio option on needs the vacuum's "
-                        "intercom switch, which this device has not reported - "
-                        "is the camera set up?"
-                    )
-                calls.append({"action": "switch.turn_on", "target": {"entity_id": intercom_switch}})
-            continue
-        if kind == "stop_stream":
-            if not stream_switch:
-                raise StepError(
-                    "'stop_stream' needs the vacuum's stream switch, which this "
-                    "device has not reported - is the camera set up?"
-                )
-            calls.append({"action": "switch.turn_off", "target": {"entity_id": stream_switch}})
-            streaming = False
-            continue
-
-        if kind == "rotate_to_heading" and streaming:
+        if kind == "rotate_to_heading":
+            # The task's stream already holds the single camera session.
             data["use_camera_session"] = False
 
-        calls.append({"action": f"{domain}.{service}", "target": {"entity_id": target},
+        calls.append({"action": f"{domain}.{service}", "target": {"entity_id": entity_id},
                       "data": data} if data else
-                     {"action": f"{domain}.{service}", "target": {"entity_id": target}})
+                     {"action": f"{domain}.{service}", "target": {"entity_id": entity_id}})
     return calls

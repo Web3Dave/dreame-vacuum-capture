@@ -956,24 +956,22 @@ def capture():
     })
 
 
-def _record_ffmpeg(rtsp_url, temp_path, audio):
+def _record_ffmpeg(rtsp_url, temp_path):
     """An ffmpeg that records the running stream's RTSP to a fragmented mp4.
 
     The stream's RTSP is already h264 video (+ AAC audio when the mic layer is
     armed), so both streams are *copied* (`-c copy`) into the mp4 rather than
-    re-encoded. That keeps the recording a genuine h264 mp4 while demanding far
-    less CPU than a live libx264 re-encode - a re-encode of a live feed in the
-    same container as the republisher falls behind and drops frames ("reader is
-    too slow, discarding ..." from MediaMTX), which muddies exactly the clip we
-    are trying to capture. `audio` adds an optional `-map 0:a:0?` (never fails a
-    video-only flow). `frag_keyframe+empty_moov` interleaves the moov data so
-    the file is already valid if cut short, and streams over HTTP.
+    re-encoded - a genuine h264 mp4 with essentially no CPU, and none of the
+    frame drops a live libx264 re-encode causes alongside the republisher.
+    Audio is recorded by default: the optional `-map 0:a:0?` never fails a
+    video-only flow, and the fragmenting mp4 muxer (see below) is always used.
+    `frag_keyframe+empty_moov` interleaves the moov data so the file is already
+    valid if cut short, and streams over HTTP.
     """
     args = ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", rtsp_url,
-            "-map", "0:v:0", "-c:v", "copy"]
-    if audio:
-        args += ["-map", "0:a:0?", "-c:a", "copy"]
-    args += ["-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
+            "-map", "0:v:0", "-c:v", "copy",
+            "-map", "0:a:0?", "-c:a", "copy",
+            "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
     # stdin stays open so end_clip can send 'q' for a clean finalisation.
     # text=True: the stdin is how we stop it, and on py3.8 the pipe is binary
     # by default -> "a bytes-like object is required" (hit live, 2026-08).
@@ -1011,15 +1009,14 @@ def record_start():
         running = _active_recordings.get(did)
         if running and running["proc"].poll() is None:
             return jsonify({"success": False, "error": "Already recording a clip for this device"}), 409
-        audio = bool(body.get("audio"))
         temp_path = os.path.join("/tmp", f"dreame_record_{did}_{int(time.time())}.mp4")
-        proc = _record_ffmpeg(rtsp_url, temp_path, audio)
+        proc = _record_ffmpeg(rtsp_url, temp_path)
         _active_recordings[did] = {
             "proc": proc, "temp": temp_path, "tag": tag,
-            "audio": audio, "started_at": time.time(),
+            "audio": True, "started_at": time.time(),
         }
-    app.logger.info("/record/start did=%s tag=%s audio=%s rtsp=%s", did, tag, audio, rtsp_url)
-    return jsonify({"success": True, "tag": tag, "audio": audio, "temp": temp_path})
+    app.logger.info("/record/start did=%s tag=%s (audio on) rtsp=%s", did, tag, rtsp_url)
+    return jsonify({"success": True, "tag": tag, "temp": temp_path})
 
 
 @app.route("/record/stop", methods=["POST"])
@@ -1842,11 +1839,7 @@ def task_calls(slug):
     if not vacuum:
         abort(409, "This vacuum has not registered its entities with the add-on yet")
     try:
-        calls = step_schema.to_service_calls(
-            task["steps"], vacuum,
-            request.args.get("stream") or entities.get("stream"),
-            request.args.get("speak") or entities.get("speak"),
-        )
+        calls = step_schema.to_service_calls(task["steps"], vacuum)
     except step_schema.StepError as err:
         abort(409, str(err))
     return jsonify({"task": task, "calls": calls})
