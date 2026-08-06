@@ -1009,7 +1009,13 @@ def record_start():
         running = _active_recordings.get(did)
         if running and running["proc"].poll() is None:
             return jsonify({"success": False, "error": "Already recording a clip for this device"}), 409
-        temp_path = os.path.join("/tmp", f"dreame_record_{did}_{int(time.time())}.mp4")
+        # Record to a temp file on the SAME filesystem as the final snapshots
+        # dir. The final save uses os.replace (an atomic rename), which FAILS
+        # across mount points with Errno 18 EXDEV (e.g. /tmp -> /media) - a
+        # recording captured fine but never landed (hit live 2026-08). The
+        # `.part` suffix is not a media extension, so a stray copy from an
+        # abandoned recording is invisible to the Tags index.
+        temp_path = os.path.join(MEDIA_ROOT, f".record-{did}-{int(time.time())}.part")
         proc = _record_ffmpeg(rtsp_url, temp_path)
         _active_recordings[did] = {
             "proc": proc, "temp": temp_path, "tag": tag,
