@@ -1116,6 +1116,38 @@ def _safe_audio_name(value: str) -> str:
     return "".join(c if (c.isalnum() or c in " ._-") else "_" for c in name)
 
 
+def _wav_for_audio(name: str) -> str:
+    """The sibling WAV of an uploaded mp3 - same stem, .wav extension."""
+    return os.path.splitext(name)[0] + ".wav"
+
+
+def ensure_audio_wav(name: str) -> None:
+    """Transcode `<name>` (an mp3 in AUDIO_ROOT) to a sibling 16k-mono-s16le
+    WAV, unless a fresh one already exists. Mirrors app.ensure_audio_wav - this
+    process (ui.py) is separate from app.py but shares the same audio dir, so
+    the same helper lives here so an upload made through the UI converts right
+    away rather than waiting for the next add-on boot.
+    """
+    import subprocess
+    if not name or not name.lower().endswith(AUDIO_EXTS):
+        return
+    src = os.path.join(AUDIO_ROOT, name)
+    if not os.path.isfile(src):
+        return
+    dst = os.path.join(AUDIO_ROOT, _wav_for_audio(name))
+    if os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
+        return
+    try:
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", src, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", dst],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+    except Exception as err:  # noqa: BLE001 - a cache miss must never block audio
+        app.logger.warning("could not pre-convert %s to wav (will decode at play): %s", name, err)
+
+
 @app.route("/api/audio")
 def api_audio():
     """List the uploaded mp3 clips."""
@@ -1152,6 +1184,8 @@ def api_audio_upload():
         upload.save(dest)
     else:
         return jsonify({"ok": False, "error": "Invalid file name"}), 400
+    # Pre-convert a WAV sibling now so the first play-back already has it.
+    ensure_audio_wav(name)
     return jsonify({"ok": True, "name": name})
 
 
@@ -1175,9 +1209,12 @@ def api_audio_delete(name):
     except ValueError:
         return jsonify({"ok": False, "error": "Invalid file name"}), 400
     path = os.path.join(AUDIO_ROOT, safe)
+    wav_path = os.path.join(AUDIO_ROOT, _wav_for_audio(safe))
     try:
         if os.path.isfile(path):
             os.remove(path)
+        if os.path.isfile(wav_path):
+            os.remove(wav_path)
     except OSError as err:
         return jsonify({"ok": False, "error": str(err)}), 500
     return jsonify({"ok": True, "name": safe})

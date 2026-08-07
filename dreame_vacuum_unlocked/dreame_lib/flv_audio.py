@@ -152,10 +152,59 @@ def mux_pcm_to_flv_packets(pcm_s16le: bytes, sample_rate: int = DEFAULT_SAMPLE_R
     return packets
 
 
+def wav_pcm_bytes(path: str, sample_rate: int = DEFAULT_SAMPLE_RATE,
+                  channels: int = DEFAULT_CHANNELS) -> bytes | None:
+    """Pull the PCM payload out of a WAV file written as s16le @16k mono,
+    without spawning ffmpeg.
+
+    The add-on pre-converts every uploaded mp3 to a sibling `<name>.wav` (see
+    app.ensure_audio_wav) so play-time skips the slow mp3 decode. If `path` is
+    such a WAV (PCM, 16-bit, matching sample rate/channels) this returns the
+    raw PCM bytes directly; otherwise None and the caller falls back to an
+    ffmpeg decode. Conservative on purpose: any mismatch (compressed wav,
+    different rate/channels, malformed header) bails to ffmpeg rather than
+    risking garbage on the speaker.
+    """
+    try:
+        with open(path, "rb") as fh:
+            data = fh.read()
+    except OSError:
+        return None
+    if len(data) < 12 or data[0:4] != b"RIFF" or data[8:12] != b"WAVE":
+        return None
+    i = 12
+    audio_format = channels_w = rate = bits = None
+    data_chunk = None
+    while i + 8 <= len(data):
+        cid = data[i:i + 4]
+        size = int.from_bytes(data[i + 4:i + 8], "little")
+        body = data[i + 8:i + 8 + size]
+        if cid == b"fmt " and len(body) >= 16:
+            audio_format = int.from_bytes(body[0:2], "little")
+            channels_w = int.from_bytes(body[2:4], "little")
+            rate = int.from_bytes(body[4:8], "little")
+            bits = int.from_bytes(body[14:16], "little")
+        elif cid == b"data":
+            data_chunk = body
+        i += 8 + size + (size & 1)  # chunks are word-aligned
+    if audio_format not in (1, 0xFFFE):
+        return None  # 0xFFFE = WAVE_FORMAT_EXTENSIBLE (still PCM underneath)
+    if bits == 16 and rate == sample_rate and channels_w == channels and data_chunk is not None:
+        return data_chunk
+    return None
+
+
 def decode_any_to_pcm(input_path: str, sample_rate: int = DEFAULT_SAMPLE_RATE,
                        channels: int = DEFAULT_CHANNELS) -> bytes:
-    """Use ffmpeg to normalize any input audio file (wav/mp3/m4a/whatever) to
-    raw 16-bit little-endian PCM at the given sample rate/channels."""
+    """Normalize any input audio file (wav/mp3/m4a/whatever) to raw 16-bit
+    little-endian PCM at the given sample rate/channels.
+
+    A pre-converted `<name>.wav` sibling that already matches the target is
+    read directly (no subprocess); everything else goes through ffmpeg.
+    """
+    pcm = wav_pcm_bytes(input_path, sample_rate, channels)
+    if pcm is not None:
+        return pcm
     cmd = [
         "ffmpeg", "-hide_banner", "-loglevel", "error",
         "-i", input_path,

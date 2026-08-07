@@ -322,9 +322,10 @@
       end_clip: '<svg viewBox="0 0 24 24"><rect x="1" y="5" width="15" height="14" rx="2"/><polygon points="23 7 16 12 23 17 23 7"/><rect x="5.5" y="9.5" width="5" height="5" rx="1" fill="currentColor" stroke="none"/></svg>',
       clean_rooms: '<svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="3"/><polyline points="4 14 12 20 20 14"/><path d="M4 14c0-2 1-3 2-4M20 14c0-2-1-3-2-4"/></svg>',
       if_classification: '<svg viewBox="0 0 24 24"><path d="M12 2 L20 13 L12 22 L4 13 Z"/><line x1="12" y1="13" x2="12" y2="22"/></svg>',
+      play_audio: '<svg viewBox="0 0 24 24"><polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.5 8.5a5 5 0 0 1 0 7M18 6a8 8 0 0 1 0 12"/></svg>',
     };
 
-    let schema = {}, devices = [], tags = [], classifiers = [];
+    let schema = {}, devices = [], tags = [], classifiers = [], audioFiles = [];
     let stepsState = TASK ? JSON.parse(JSON.stringify(TASK.steps)) : [];
     let selIndex = -1;             // selected step, -1 for none
     let tool = "location";
@@ -373,6 +374,10 @@
         const cres = await fetch(`${BASE}/api/classifications`);
         classifiers = ((await cres.json()).classifications || []).filter(c => c.configured);
       } catch { classifiers = []; }
+      try {
+        const ares = await fetch(`${BASE}/api/audio`);
+        audioFiles = ((await ares.json()).files || []).filter(f => f.toLowerCase().endsWith(".mp3"));
+      } catch { audioFiles = []; }
       renderSteps();
       await loadMap(false);
     }
@@ -727,6 +732,30 @@
       return spec.label || step.type;
     }
 
+    // Render one field's control: a switch for bools, a dropdown of uploaded
+    // clips for play_audio's filename, else a text input. `attrs` carries the
+    // addressing attributes (data-step for top-level, data-bpath+data-bidx for
+    // nested); shared so top-level and nested steps render identically.
+    function fieldCtrl(step, f, attrs, idx) {
+      if (f.type === "bool") {
+        const on = !!step[f.name];
+        return `<label class="bool-view"><span>${esc(f.name)}</span>
+          <input type="checkbox" role="switch" ${attrs} data-bool="1" data-field="${esc(f.name)}" title="${esc(f.help)}" ${on ? "checked" : ""}></label>`;
+      }
+      if (step.type === "play_audio" && f.name === "filename") {
+        const chosen = step[f.name] || "";
+        const known = audioFiles.includes(chosen);
+        return `<label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
+          <select ${attrs} data-bidx="${idx}" data-field="filename" title="${esc(f.help)}">
+            ${chosen && !known ? `<option value="${esc(chosen)}" selected>${esc(chosen)} (missing)</option>` : ""}
+            ${audioFiles.map(a => `<option value="${esc(a)}"${a === chosen ? " selected" : ""}>${esc(a)}</option>`).join("")}
+          </select></label>`;
+      }
+      return `<label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
+        <input ${attrs} data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
+               placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`;
+    }
+
     function renderSteps() {
       const rows = stepsState.map((step, i) => {
         const sel = i === selIndex;
@@ -739,17 +768,8 @@
           : (step.type === "if_classification" ? [] : roomFields);
         const ifcEditor = (sel && step.type === "if_classification")
           ? renderIfClassEditor(step, [i]) : "";
-        const fields = sel ? textFields.map(f => {
-          if (f.type === "bool") {
-            const on = !!step[f.name];
-            return `<label class="bool-view"><span>${esc(f.name)}</span>
-              <input type="checkbox" role="switch" data-step="${i}" data-field="${esc(f.name)}"
-                     data-bool="1" title="${esc(f.help)}" ${on ? "checked" : ""}></label>`;
-          }
-          return `<label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
-            <input data-step="${i}" data-field="${esc(f.name)}" value="${esc(step[f.name] ?? "")}"
-                   placeholder="${esc(f.default ?? "")}" title="${esc(f.help)}"></label>`;
-        }).join("") : "";
+        const fields = sel ? textFields.map(f =>
+          fieldCtrl(step, f, `data-step="${i}"`, "")).join("") : "";
         const mapEdit = {go_to_point: "Edit on map", rotate_to_heading: "Adjust heading",
                          take_snapshot: "Change tag", clean_rooms: "Pick rooms on map"}[step.type];
         const roomEditor = (sel && step.type === "clean_rooms")
@@ -881,16 +901,8 @@
       const pj = enc(ref.concat(branchPath));
       const rows = parent.map((step, k) => {
         const spec = schema[step.type] || {fields: []};
-        const fields = (spec.fields || []).filter(f => f.name !== "rooms").map(f => {
-          if (f.type === "bool") {
-            const on = !!step[f.name];
-            return `<label class="bool-view"><span>${esc(f.name)}</span>
-              <input type="checkbox" role="switch" data-bpath="${esc(pj)}" data-bidx="${k}" data-bool="1" data-field="${esc(f.name)}" ${on ? "checked" : ""}></label>`;
-          }
-          return `<label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
-            <input data-bpath="${esc(pj)}" data-bidx="${k}" data-field="${esc(f.name)}"
-                   value="${esc(step[f.name] ?? "")}" placeholder="${esc(f.default ?? "")}"></label>`;
-        }).join("");
+        const fields = (spec.fields || []).filter(f => f.name !== "rooms")
+          .map(f => fieldCtrl(step, f, `data-bpath="${esc(pj)}" data-bidx="${k}"`, k)).join("");
         const nested = step.type === "if_classification"
           ? renderIfClassEditor(step, ref.concat(branchPath).concat(k)) : "";
         return `<div class="ifc-step">
@@ -911,7 +923,8 @@
     }
 
     function collectFromUi() {
-      for (const input of document.querySelectorAll("#step-list input[data-step]")) {
+      for (const input of document.querySelectorAll(
+        "#step-list input[data-step], #step-list select[data-step]")) {
         const step = stepsState[Number(input.dataset.step)];
         if (!step) continue;
         if (input.dataset.bool !== undefined) {
@@ -926,7 +939,8 @@
         else step[input.dataset.field] = value;
       }
       // Nested steps inside if-classification branches, addressed by path.
-      for (const input of document.querySelectorAll("#step-list input[data-bpath]")) {
+      for (const input of document.querySelectorAll(
+        "#step-list input[data-bpath], #step-list select[data-bpath]")) {
         let list;
         try { list = resolvePath(JSON.parse(input.dataset.bpath)); }
         catch { continue; }

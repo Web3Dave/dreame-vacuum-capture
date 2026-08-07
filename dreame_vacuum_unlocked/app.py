@@ -478,6 +478,54 @@ def _safe_audio_name(value):
     return "".join(c if (c.isalnum() or c in " ._-") else "_" for c in name)
 
 
+def _wav_for_audio(name):
+    """The sibling WAV of an uploaded mp3 - same stem, .wav extension."""
+    return os.path.splitext(name)[0] + ".wav"
+
+
+def ensure_audio_wav(name):
+    """Transcode `<name>` (an mp3 in AUDIO_ROOT) to a sibling 16k-mono-s16le
+    WAV, unless a fresh one already exists.
+
+    Play-time (build_send_file -> decode_any_to_pcm) reads a matching WAV's
+    PCM straight out of the file with no ffmpeg, so pre-converting once here
+    removes the slow mp3 decode from every later playback. Idempotent and
+    cheap: if the WAV is present and at least as new as the mp3, nothing runs.
+    """
+    if not name or not name.lower().endswith(AUDIO_EXTS):
+        return
+    src = os.path.join(AUDIO_ROOT, name)
+    if not os.path.isfile(src):
+        return
+    dst = os.path.join(AUDIO_ROOT, _wav_for_audio(name))
+    if os.path.isfile(dst) and os.path.getmtime(dst) >= os.path.getmtime(src):
+        return
+    try:
+        # -y is safe: dst only ever exists as a stale sibling we are re-making.
+        subprocess.run(
+            ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y",
+             "-i", src, "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le", dst],
+            check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+            timeout=120,
+        )
+        app.logger.info("pre-converted %s -> %s", name, os.path.basename(dst))
+    except Exception as err:  # noqa: BLE001 - a cache miss must never block audio
+        app.logger.warning("could not pre-convert %s to wav (will decode at play): %s", name, err)
+
+
+def ensure_all_audio_wavs():
+    """Startup back-fill: any uploaded mp3 that has no (or a stale) WAV sibling
+    gets one, so a clip uploaded before this feature existed still plays fast."""
+    try:
+        if not os.path.isdir(AUDIO_ROOT):
+            return
+        for n in sorted(os.listdir(AUDIO_ROOT)):
+            if n.lower().endswith(AUDIO_EXTS) and os.path.isfile(os.path.join(AUDIO_ROOT, n)):
+                ensure_audio_wav(n)
+    except Exception as err:  # noqa: BLE001
+        app.logger.warning("audio wav back-fill scan failed: %s", err)
+
+
 def _mux_audio_to_flv(audio_bytes, tag):
     """Any ffmpeg-readable audio bytes -> a temp .flv file muxed exactly like
     the app's own AudioRecordUtil/PCMEncoder/FLVPacker pipeline (AAC-LC,
@@ -705,8 +753,13 @@ def speak_send():
         src_path = os.path.join(AUDIO_ROOT, safe)
         if not os.path.isfile(src_path):
             abort(404, f"No such clip: {safe}")
-        audio_size_hint = os.path.getsize(src_path)
-        mux_input = ("path", src_path)
+        # Prefer the pre-converted WAV sibling (see ensure_audio_wav): builds
+        # the FLV/AAC stream by reading PCM straight out of the file, no mp3
+        # decode. Fall back to the mp3 only if the WAV is somehow absent.
+        wav_path = os.path.join(AUDIO_ROOT, _wav_for_audio(safe))
+        play_path = wav_path if os.path.isfile(wav_path) else src_path
+        audio_size_hint = os.path.getsize(play_path)
+        mux_input = ("path", play_path)
     elif body.get("audio"):
         try:
             audio = base64.b64decode(body["audio"])
@@ -2000,6 +2053,10 @@ def _log_request(response):
 
 if __name__ == "__main__":
     store.init()
+    # Back-fill WAV siblings for any mp3 uploaded before this feature (or that
+    # missed its conversion) so play-time skips the slow decode. Runs before
+    # serving so the first /speak/send already has them.
+    ensure_all_audio_wavs()
     # Not Flask's dev server: it mishandles HTTP keep-alive, which surfaced as
     # aiohttp in Home Assistant raising "Server disconnected" when it reused a
     # pooled connection the server had already dropped. Long requests

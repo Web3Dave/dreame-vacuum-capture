@@ -106,6 +106,18 @@ STEP_TYPES = {
         ],
         "service": None,
     },
+    "play_audio": {
+        "label": "Play audio",
+        "help": "Push an uploaded audio clip to the vacuum's speaker. The "
+                "clip must already be uploaded on the Audio tab; it plays "
+                "through the talk-back channel (the WAV sibling is used if "
+                "present, so playback skips the mp3 decode).",
+        "fields": [
+            ("filename", "str", True, None,
+             "The uploaded audio clip to play (from the Audio tab)"),
+        ],
+        "service": ("dreame_vacuum_unlocked_integration", "play_audio_clip"),
+    },
 }
 
 
