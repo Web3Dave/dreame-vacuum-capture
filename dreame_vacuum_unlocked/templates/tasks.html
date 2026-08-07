@@ -247,6 +247,10 @@
 
     function describe(step) {
       const spec = schema[step.type] || {};
+      if (step.type === "if_classification") {
+        const n = Object.keys(step.cases || {}).length;
+        return `If classification (${n} case${n === 1 ? "" : "s"})`;
+      }
       const detail = (spec.fields || []).filter(f => step[f.name] !== undefined)
         .map(f => `${f.name} ${step[f.name]}`).join(", ");
       return (spec.label || step.type) + (detail ? ` (${detail})` : "");

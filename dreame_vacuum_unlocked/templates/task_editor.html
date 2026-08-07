@@ -117,6 +117,29 @@
     .room-order-n { color:var(--accent); font-weight:700; width:16px; text-align:right; flex:none; }
     .room-order-row button { padding:2px 8px; font-size:12px; }
 
+    /* if-classification step: nested branch editor */
+    .ifc-editor { border:1px dashed var(--line); border-radius:8px; padding:10px; margin-bottom:10px;
+                  background:rgba(127,127,127,.04); }
+    .ifc-clf { display:flex; flex-direction:column; gap:4px; font-size:12px; color:var(--muted); margin-bottom:10px; }
+    .ifc-clf select { font-size:13.5px; padding:6px 8px; }
+    .ifc-case, .ifc-default { border:1px solid var(--line); border-radius:8px; padding:8px; margin-bottom:8px; }
+    .ifc-case-head { display:flex; align-items:center; justify-content:space-between; gap:8px;
+                     font-size:13px; margin-bottom:6px; }
+    .ifc-case-head button { padding:2px 8px; font-size:11.5px; }
+    .ifc-sublist { display:flex; flex-direction:column; gap:6px; margin-bottom:6px; }
+    .ifc-step { border:1px solid var(--line); border-radius:8px; padding:7px 8px; }
+    .ifc-step-head { display:flex; align-items:center; gap:8px; }
+    .ifc-step-head svg { width:14px; height:14px; color:var(--muted); flex:none; }
+    .ifc-step-head .n { color:var(--muted); font-size:11.5px; width:14px; text-align:right; flex:none; }
+    .ifc-step-head .what { flex:1; min-width:0; font-size:12.5px; overflow:hidden;
+                           text-overflow:ellipsis; white-space:nowrap; }
+    .ifc-step-actions { display:flex; gap:4px; flex:none; }
+    .ifc-step-actions button { padding:1px 7px; font-size:11.5px; }
+    .ifc-nested { margin-top:8px; }
+    .ifc-addmenu { display:flex; gap:6px; margin-top:2px; }
+    .ifc-addmenu select { flex:1; font-size:12.5px; padding:4px 6px; }
+    .ifc-addmenu button { padding:4px 10px; font-size:12.5px; }
+
     svg { fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
 
     /* Narrow screens: the two panes become tabs rather than a squeeze. */
@@ -298,9 +321,10 @@
       record_clip: '<svg viewBox="0 0 24 24"><rect x="1" y="5" width="15" height="14" rx="2"/><polygon points="23 7 16 12 23 17 23 7"/><circle cx="8" cy="12" r="3.4" fill="currentColor" stroke="none"/></svg>',
       end_clip: '<svg viewBox="0 0 24 24"><rect x="1" y="5" width="15" height="14" rx="2"/><polygon points="23 7 16 12 23 17 23 7"/><rect x="5.5" y="9.5" width="5" height="5" rx="1" fill="currentColor" stroke="none"/></svg>',
       clean_rooms: '<svg viewBox="0 0 24 24"><circle cx="12" cy="6" r="3"/><polyline points="4 14 12 20 20 14"/><path d="M4 14c0-2 1-3 2-4M20 14c0-2-1-3-2-4"/></svg>',
+      if_classification: '<svg viewBox="0 0 24 24"><path d="M12 2 L20 13 L12 22 L4 13 Z"/><line x1="12" y1="13" x2="12" y2="22"/></svg>',
     };
 
-    let schema = {}, devices = [], tags = [];
+    let schema = {}, devices = [], tags = [], classifiers = [];
     let stepsState = TASK ? JSON.parse(JSON.stringify(TASK.steps)) : [];
     let selIndex = -1;             // selected step, -1 for none
     let tool = "location";
@@ -345,6 +369,10 @@
         .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
       if (TASK) { $("t-name").value = TASK.name; $("t-slug").value = TASK.slug; }
       await refreshTags();
+      try {
+        const cres = await fetch(`${BASE}/api/classifications`);
+        classifiers = ((await cres.json()).classifications || []).filter(c => c.configured);
+      } catch { classifiers = []; }
       renderSteps();
       await loadMap(false);
     }
@@ -676,6 +704,11 @@
     // ---- steps list ------------------------------------------------------
     function describe(step) {
       const spec = schema[step.type] || {};
+      if (step.type === "if_classification") {
+        const c = classifiers.find(x => x.id === step.classifier);
+        const n = Object.keys(step.cases || {}).length;
+        return `If ${c ? c.name : ("classification " + step.classifier)} (${n} case${n === 1 ? "" : "s"})`;
+      }
       if (step.type === "go_to_point" && step.x !== undefined)
         return `Go to x ${step.x}, y ${step.y}`;
       if (step.type === "rotate_to_heading" && step.heading !== undefined)
@@ -702,7 +735,10 @@
         // not a plain text input, so drop it from the generic text fields.
         const roomFields = spec.fields || [];
         const textFields = step.type === "clean_rooms"
-          ? roomFields.filter(f => f.name !== "rooms") : roomFields;
+          ? roomFields.filter(f => f.name !== "rooms")
+          : (step.type === "if_classification" ? [] : roomFields);
+        const ifcEditor = (sel && step.type === "if_classification")
+          ? renderIfClassEditor(step, [i]) : "";
         const fields = sel ? textFields.map(f => {
           if (f.type === "bool") {
             const on = !!step[f.name];
@@ -725,6 +761,7 @@
             <span class="what">${esc(describe(step))}</span>
           </div>
           ${sel ? `<div class="row-more">
+            ${ifcEditor}
             ${roomEditor}
             ${fields ? `<div class="row-fields">${fields}</div>` : ""}
             <div class="row-actions">
@@ -775,6 +812,104 @@
         </div>`;
     }
 
+    // ---- nested if-classification editor --------------------------------
+    // A branch addresses a step by a path through stepsState, e.g.
+    // [2, "cases", "dog", 0] = stepsState[2].cases.dog[0]. The top-level
+    // editor still uses plain integer indices (data-step); only steps that
+    // live inside a conditional carry an explicit path (data-bpath/-bidx).
+    function resolvePath(segments) {
+      let node = stepsState;
+      for (const s of segments) node = node[s];
+      return node;
+    }
+    const enc = v => JSON.stringify(v);
+
+    function renderIfClassEditor(step, ref) {
+      if (!classifiers.length) {
+        return `<div class="ifc-editor" data-ref="${esc(enc(ref))}">
+          <p class="hint" style="margin:4px 0">No configured classifications yet.
+          Create and train one on the Classifications tab first, and link its
+          tag to a snapshot step above this one.</p></div>`;
+      }
+      const clf = classifiers.find(c => c.id === step.classifier) || classifiers[0];
+      // Keep only cases for the current classifier's classes; anything already
+      // built under a label the classifier no longer has is allowed to go.
+      step.classifier = clf.id;
+      const fresh = {};
+      for (const cls of clf.classes) fresh[cls] = (step.cases && step.cases[cls]) || [];
+      step.cases = fresh;
+      if (!Array.isArray(step.default)) step.default = [];
+      const clfRef = enc(ref);
+      const caseRows = clf.classes.map(cls => {
+        const pj = enc(ref.concat(["cases", cls]));
+        return `<div class="ifc-case">
+          <div class="ifc-case-head"><b>if result == &ldquo;${esc(cls)}&rdquo;</b>
+            <button type="button" class="danger" data-ifc-clear="${esc(clfRef)}" data-label="${esc(cls)}">clear</button></div>
+          <div class="ifc-sublist">${renderBranchRows(ref, ["cases", cls])}</div>
+          <div class="ifc-addmenu">
+            <select data-ifc-newtype="${esc(pj)}">${typeOptions()}</select>
+            <button type="button" data-ifc-add="${esc(pj)}">+ Add step</button>
+          </div>
+        </div>`;
+      }).join("");
+      const defaultPj = enc(ref.concat(["default"]));
+      return `<div class="ifc-editor" data-ref="${esc(clfRef)}">
+        <label class="ifc-clf"><span>Classification</span>
+          <select data-ifc-clf="${esc(clfRef)}">
+            ${classifiers.map(c => `<option value="${esc(c.id)}"${c.id === clf.id ? " selected" : ""}>${esc(c.name)}</option>`).join("")}
+          </select>
+        </label>
+        <div class="ifc-cases">${caseRows}</div>
+        <div class="ifc-default">
+          <div class="ifc-case-head"><b>else (no case matches)</b></div>
+          <div class="ifc-sublist">${renderBranchRows(ref, ["default"])}</div>
+          <div class="ifc-addmenu">
+            <select data-ifc-newtype="${esc(defaultPj)}">${typeOptions()}</select>
+            <button type="button" data-ifc-add="${esc(defaultPj)}">+ Add step</button>
+          </div>
+        </div>
+      </div>`;
+    }
+
+    function typeOptions() {
+      return Object.entries(schema)
+        .map(([k, v]) => `<option value="${esc(k)}">${esc(v.label)}</option>`).join("");
+    }
+
+    function renderBranchRows(ref, branchPath) {
+      const parent = resolvePath(ref.concat(branchPath));
+      const pj = enc(ref.concat(branchPath));
+      const rows = parent.map((step, k) => {
+        const spec = schema[step.type] || {fields: []};
+        const fields = (spec.fields || []).filter(f => f.name !== "rooms").map(f => {
+          if (f.type === "bool") {
+            const on = !!step[f.name];
+            return `<label class="bool-view"><span>${esc(f.name)}</span>
+              <input type="checkbox" role="switch" data-bpath="${esc(pj)}" data-bidx="${k}" data-bool="1" data-field="${esc(f.name)}" ${on ? "checked" : ""}></label>`;
+          }
+          return `<label><span>${esc(f.name)}${f.required ? " *" : ""}</span>
+            <input data-bpath="${esc(pj)}" data-bidx="${k}" data-field="${esc(f.name)}"
+                   value="${esc(step[f.name] ?? "")}" placeholder="${esc(f.default ?? "")}"></label>`;
+        }).join("");
+        const nested = step.type === "if_classification"
+          ? renderIfClassEditor(step, ref.concat(branchPath).concat(k)) : "";
+        return `<div class="ifc-step">
+          <div class="ifc-step-head">
+            <span class="n">${k + 1}</span>
+            ${ICONS[step.type] || ""}
+            <span class="what">${esc(describe(step))}</span>
+            <span class="ifc-step-actions">
+              <button type="button" data-bpath="${esc(pj)}" data-bidx="${k}" data-bup="1" ${k === 0 ? "disabled" : ""}>&uarr;</button>
+              <button type="button" data-bpath="${esc(pj)}" data-bidx="${k}" data-bdown="1" ${k === parent.length - 1 ? "disabled" : ""}>&darr;</button>
+              <button type="button" class="danger" data-bpath="${esc(pj)}" data-bidx="${k}" data-brm="1">×</button>
+            </span>
+          </div>
+          ${nested ? `<div class="ifc-nested">${nested}</div>` : (fields ? `<div class="row-fields">${fields}</div>` : "")}
+        </div>`;
+      }).join("");
+      return rows || `<span class="hint" style="margin:2px 0">(no steps yet)</span>`;
+    }
+
     function collectFromUi() {
       for (const input of document.querySelectorAll("#step-list input[data-step]")) {
         const step = stepsState[Number(input.dataset.step)];
@@ -790,10 +925,41 @@
         if (value === "") delete step[input.dataset.field];
         else step[input.dataset.field] = value;
       }
+      // Nested steps inside if-classification branches, addressed by path.
+      for (const input of document.querySelectorAll("#step-list input[data-bpath]")) {
+        let list;
+        try { list = resolvePath(JSON.parse(input.dataset.bpath)); }
+        catch { continue; }
+        const step = list[Number(input.dataset.bidx)];
+        if (!step) continue;
+        if (input.dataset.bool !== undefined) {
+          if (input.checked) step[input.dataset.field] = true;
+          else delete step[input.dataset.field];
+          continue;
+        }
+        const value = input.value.trim();
+        if (value === "") delete step[input.dataset.field];
+        else step[input.dataset.field] = value;
+      }
       return stepsState;
     }
 
     $("step-list").addEventListener("input", () => { dirty = true; collectFromUi(); draw(); });
+    $("step-list").addEventListener("change", e => {
+      if (e.target.dataset.ifcClf === undefined) return;
+      let ref;
+      try { ref = JSON.parse(e.target.dataset.ifcClf); } catch { return; }
+      const step = resolvePath(ref);
+      if (!step || step.type !== "if_classification") return;
+      step.classifier = e.target.value;
+      const clf = classifiers.find(c => c.id === e.target.value);
+      const fresh = {};
+      for (const cls of (clf ? clf.classes : [])) {
+        fresh[cls] = (step.cases && step.cases[cls]) || [];
+      }
+      step.cases = fresh;
+      dirty = true; renderSteps();
+    });
 
     function selectStep(i) {
       if (draft) cancelDraft();
@@ -889,15 +1055,33 @@
     // save. The camera stream is managed around the whole task, so no step
     // ever has to open or close it.
     function pairError(steps) {
-      let clips = 0;
-      for (const s of steps) {
-        if (s.type === "record_clip") clips++;
-        else if (s.type === "end_clip") clips--;
-        if (clips < 0) return "An end_clip appears before its record_clip.";
+      // Each if-classification branch must balance on its own (a clip started
+      // in one branch must end in that same branch); otherwise the clip state
+      // after the conditional depends on which branch ran. The conditional
+      // itself neither opens nor closes a clip.
+      function walk(list) {
+        let clips = 0;
+        for (const s of list) {
+          if (s.type === "if_classification") {
+            for (const k in (s.cases || {})) {
+              const e = walk(s.cases[k]);
+              if (e) return e;
+            }
+            if (s.default) {
+              const e = walk(s.default);
+              if (e) return e;
+            }
+            continue;
+          }
+          if (s.type === "record_clip") clips++;
+          else if (s.type === "end_clip") clips--;
+          if (clips < 0) return "An end_clip appears before its record_clip.";
+        }
+        if (clips > 0)
+          return "A record_clip step has no matching end_clip - the recording would never be saved. Add an end_clip.";
+        return null;
       }
-      if (clips > 0)
-        return "A record_clip step has no matching end_clip - the recording would never be saved. Add an end_clip.";
-      return null;
+      return walk(steps);
     }
 
     async function saveTask() {
@@ -940,6 +1124,42 @@
     document.addEventListener("click", e => {
       const t = e.target.closest("button, [data-selrow], [data-room-chosen]");
       if (!t) return;
+      // Nested controls inside if-classification branches.
+      if (t.dataset.ifcAdd !== undefined) {
+        let list;
+        try { list = resolvePath(JSON.parse(t.dataset.ifcAdd)); } catch { return; }
+        collectFromUi();
+        const menu = t.closest(".ifc-addmenu");
+        const sel = menu && menu.querySelector("[data-ifc-newtype]");
+        list.push({type: sel ? sel.value : "return_to_dock"});
+        dirty = true; renderSteps();
+        return;
+      }
+      if (t.dataset.ifcClear !== undefined) {
+        let ref;
+        try { ref = JSON.parse(t.dataset.ifcClear); } catch { return; }
+        const step = resolvePath(ref);
+        if (step && step.type === "if_classification" && step.cases) {
+          step.cases[t.dataset.label] = [];
+          dirty = true; renderSteps();
+        }
+        return;
+      }
+      if (t.dataset.bup !== undefined || t.dataset.bdown !== undefined || t.dataset.brm !== undefined) {
+        let list;
+        try { list = resolvePath(JSON.parse(t.dataset.bpath)); } catch { return; }
+        collectFromUi();
+        const k = Number(t.dataset.bidx);
+        if (t.dataset.bup !== undefined && k > 0) {
+          [list[k - 1], list[k]] = [list[k], list[k - 1]];
+        } else if (t.dataset.bdown !== undefined && k < list.length - 1) {
+          [list[k + 1], list[k]] = [list[k], list[k + 1]];
+        } else if (t.dataset.brm !== undefined) {
+          list.splice(k, 1);
+        }
+        dirty = true; renderSteps();
+        return;
+      }
       // Room chips in a clean_rooms step: tap to add to the end / remove.
       if (t.dataset.roomChosen !== undefined) {
         const i = Number(t.dataset.roomChosen);

@@ -722,6 +722,15 @@ def _script_yaml(task, calls):
         "  sequence:",
     ]
     for call in calls:
+        if call.get("branch"):
+            # A task-side conditional can't be a plain strung-together service
+            # call. Full choose: export is a later piece - until then, say so
+            # plainly in the script rather than silently dropping the branch.
+            lines.append(
+                f"    # if classification '{call['classifier']}' (branch export "
+                "not available yet - see the add-on task editor)"
+            )
+            continue
         lines.append(f"    - action: {call['action']}")
         target = call.get("target") or {}
         if target:

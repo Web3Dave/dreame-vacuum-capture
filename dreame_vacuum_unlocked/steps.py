@@ -87,6 +87,25 @@ STEP_TYPES = {
         ],
         "service": ("dreame_vacuum_unlocked_integration", "clean_rooms"),
     },
+    # A control step, not a service call: `service` is deliberately None. It
+    # holds a classifier id plus a list of steps per classification label, and
+    # the task runner picks which branch to run based on the classifier's most
+    # recent snapshot result (see to_service_calls -> {branch: ...} nodes).
+    "if_classification": {
+        "label": "If classification",
+        "help": "Branch on a trained classifier's result. Put a 'Take snapshot' "
+                "step whose tag this classification is linked to before it, "
+                "then pick the label to match for each branch.",
+        "fields": [
+            ("classifier", "str", True, None,
+             "The classification (by id) whose last result decides the branch"),
+            ("cases", "steps_map", True, None,
+             "Which steps run when the result equals each label"),
+            ("default", "steps_list", False, [],
+             "Steps that run when the result matches no case"),
+        ],
+        "service": None,
+    },
 }
 
 
@@ -139,6 +158,11 @@ def _coerce(value, kind, where):
             if v in ("false", "0", "no", "off", "n", ""):
                 return False
         raise StepError(f"{where} must be yes or no, got {value!r}")
+    if kind in ("steps_map", "steps_list"):
+        # Pass through untouched; the deep validation (each nested step, and
+        # pairing inside each branch) happens in validate_step's
+        # if_classification block, which alone understands the nesting.
+        return value
     return str(value)
 
 
@@ -169,11 +193,34 @@ def validate_step(step, index=0):
             raise StepError(f"Step {index + 1} ({kind}): '{name}' is required")
         elif default is not None:
             out[name] = default
+
+    if kind == "if_classification":
+        # Deep-validate the nested branches. `cases` is a mapping of
+        # classification label -> list of steps; `default` is an optional list.
+        # Passed through _coerce untouched (kind "steps_map"/"steps_list");
+        # this is the only place that knows the shape, so it owns the errors.
+        cases = out.get("cases")
+        if not isinstance(cases, dict) or not cases:
+            raise StepError(
+                f"Step {index + 1} (if_classification): 'cases' must be a "
+                "non-empty mapping of classification label to a list of steps"
+            )
+        out["cases"] = {
+            str(label): validate_steps(cases[label], allow_empty=True)
+            for label in cases
+        }
+        default_steps = out.get("default")
+        if default_steps:
+            out["default"] = validate_steps(default_steps, allow_empty=True)
+        else:
+            out.pop("default", None)
     return out
 
 
-def validate_steps(steps):
-    if not isinstance(steps, list) or not steps:
+def validate_steps(steps, allow_empty=False):
+    if not isinstance(steps, list):
+        raise StepError("A task's steps must be a list")
+    if not steps and not allow_empty:
         raise StepError("A task needs at least one step")
     out = [validate_step(step, i) for i, step in enumerate(steps)]
     return _validate_pairings(out)
@@ -191,6 +238,12 @@ def _validate_pairings(steps):
     open_clips = 0
     for i, step in enumerate(steps):
         kind = step["type"]
+        if kind == "if_classification":
+            # Each branch already pair-checks itself (validate_step recurses
+            # through validate_steps), and the conditional as a whole neither
+            # opens nor closes a clip. A clip left running before it must be
+            # matched after it at this same level, so no counter change here.
+            continue
         if kind == "record_clip":
             if open_clips:
                 raise StepError(
@@ -219,6 +272,9 @@ def describe(step):
     kind = step.get("type")
     spec = STEP_TYPES.get(kind, {})
     label = spec.get("label", kind)
+    if kind == "if_classification":
+        n = len(step.get("cases") or {})
+        return f"If classification ({n} case{'s' if n != 1 else ''})"
     detail = ", ".join(
         f"{name} {step[name]}" for name, *_ in spec.get("fields", []) if name in step
     )
@@ -235,6 +291,25 @@ def to_service_calls(steps, entity_id):
     calls = []
     for step in steps:
         kind = step["type"]
+
+        if kind == "if_classification":
+            # A control node, not a service call: the runner reads the
+            # classifier's current result and runs exactly one branch, so the
+            # branches cannot be flattened ahead of time. Recursing here keeps
+            # every level of nesting expanded by the same rule.
+            node = {
+                "branch": True,
+                "classifier": step["classifier"],
+                "cases": {
+                    label: to_service_calls(branch, entity_id)
+                    for label, branch in step["cases"].items()
+                },
+            }
+            if step.get("default"):
+                node["default"] = to_service_calls(step["default"], entity_id)
+            calls.append(node)
+            continue
+
         domain, service = STEP_TYPES[kind]["service"]
         data = {k: v for k, v in step.items() if k != "type"}
 
