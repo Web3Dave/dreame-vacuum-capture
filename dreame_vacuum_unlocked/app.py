@@ -957,11 +957,40 @@ def capture():
         stream_active = existing is not None and existing["p2p_proc"].poll() is None
         rtsp_url = existing["rtsp_url"] if stream_active else None
 
+    # A clip recording already holds the one reader this pipeline reliably
+    # tolerates. Opening a second RTSP reader for a snapshot tears the
+    # recording down (observed live: the clip stopped exactly at the snapshot
+    # moment). So while a clip is recording we source the frame from the
+    # recorder's own per-second last-frame jpeg instead - no second reader, and
+    # the recording keeps running untouched.
+    rec_active = False
+    rec_frame = None
+    with _recordings_lock:
+        rec = _active_recordings.get(did)
+        if rec is not None and rec["proc"].poll() is None:
+            rec_active = True
+            candidate = rec.get("frame")
+            if candidate and os.path.exists(candidate) and os.path.getsize(candidate) > 0:
+                rec_frame = candidate
+
     try:
-        if stream_active:
+        if rec_active:
+            # Never fall through to the RTSP path here - that is what breaks
+            # the recording. If the recorder hasn't written a frame yet, say so
+            # rather than disturb it.
+            if not rec_frame:
+                abort(502, "Clip just started recording - no frame yet, retry in a moment")
+            assert rec_frame is not None  # abort() raised above if None
+            with open(rec_frame, "rb") as src:
+                image = src.read()
+            with open(snapshot_path, "wb") as dst:
+                dst.write(image)
+        elif stream_active:
             ok, stderr = _grab_frame(rtsp_url, snapshot_path)
             if not ok:
                 abort(502, f"Active stream isn't producing frames right now (it should self-recover shortly): {stderr[-300:]}")
+            with open(snapshot_path, "rb") as src:
+                image = src.read()
         else:
             owns_session = True
             act = run_activation(
@@ -971,9 +1000,9 @@ def capture():
             ok, stderr = _grab_frame(act["live_url"], snapshot_path)
             if not ok:
                 abort(502, f"ffmpeg failed to capture a frame: {stderr[-500:]}")
+            with open(snapshot_path, "rb") as src:
+                image = src.read()
 
-        with open(snapshot_path, "rb") as src:
-            image = src.read()
         for destination in (latest_path, device_latest):
             with open(destination, "wb") as dst:
                 dst.write(image)
@@ -1009,7 +1038,7 @@ def capture():
     })
 
 
-def _record_ffmpeg(rtsp_url, temp_path):
+def _record_ffmpeg(rtsp_url, temp_path, frame_path):
     """An ffmpeg that records the running stream's RTSP to a fragmented mp4.
 
     Video is RE-ENCODED to h264 (`libx264`), audio stream-copied. The mp4 muxer
@@ -1022,12 +1051,19 @@ def _record_ffmpeg(rtsp_url, temp_path):
     `frag_keyframe+empty_moov` keeps it valid if stopped mid-capture.
     Audio (`-map 0:a:0?` = optional, so a mic-less stream still records video)
     is copied straight through - its params are already known.
+
+    A second output maintains a continuously-overwritten `frame_path` JPEG (one
+    per second) so a snapshot can be taken DURING the recording without opening
+    a second RTSP reader - which would tear the recording down (see /capture).
     """
     args = ["ffmpeg", "-y", "-rtsp_transport", "tcp", "-i", rtsp_url,
             "-map", "0:v:0", "-c:v", "libx264", "-preset", "veryfast",
             "-crf", "23", "-pix_fmt", "yuv420p",
             "-map", "0:a:0?", "-c:a", "copy",
-            "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path]
+            "-movflags", "frag_keyframe+empty_moov", "-f", "mp4", temp_path,
+            "-map", "0:v:0", "-vf", "fps=1", "-c:v", "mjpeg",
+            "-pix_fmt", "yuvj420p", "-q:v", "3", "-update", "1",
+            "-f", "image2", frame_path]
     # stdin stays open so end_clip can send 'q' for a clean finalisation.
     # text=True: the stdin is how we stop it, and on py3.8 the pipe is binary
     # by default -> "a bytes-like object is required" (hit live, 2026-08).
@@ -1040,7 +1076,7 @@ def _record_ffmpeg(rtsp_url, temp_path):
     )
 
 
-def _start_recording(did, rtsp_url, temp_path):
+def _start_recording(did, rtsp_url, temp_path, frame_path):
     """Keep launching the recorder until one actually captures frames.
 
     A freshly-opened stream is unstable for its first few seconds: arming the
@@ -1055,7 +1091,7 @@ def _start_recording(did, rtsp_url, temp_path):
     stream never stabilised.
     """
     for attempt in range(5):
-        proc = _record_ffmpeg(rtsp_url, temp_path)
+        proc = _record_ffmpeg(rtsp_url, temp_path, frame_path)
         produced = False
         size = 0
         deadline = time.time() + 5
@@ -1154,11 +1190,19 @@ def record_start():
         # `.part` suffix is not a media extension, so a stray copy from an
         # abandoned recording is invisible to the Tags index.
         temp_path = os.path.join(MEDIA_ROOT, f".record-{did}-{int(time.time())}.part")
+        # A per-second "last frame" jpeg the recorder maintains, so a snapshot
+        # can be taken mid-clip without opening a second RTSP reader (which
+        # would tear the recording down). Clear any stale copy first.
+        frame_path = os.path.join(MEDIA_ROOT, f".recframe-{did}.jpg")
+        try:
+            os.remove(frame_path)
+        except OSError:
+            pass
 
     # Keep launching until one actually captures (the freshly-opened stream
     # tears down readers during the intercom publisher respawn - see
     # _start_recording). Only report success once a recorder is stable.
-    proc = _start_recording(did, rtsp_url, temp_path)
+    proc = _start_recording(did, rtsp_url, temp_path, frame_path)
     if proc is None:
         return jsonify({
             "success": False,
@@ -1168,7 +1212,7 @@ def record_start():
 
     with _recordings_lock:
         _active_recordings[did] = {
-            "proc": proc, "temp": temp_path, "tag": tag,
+            "proc": proc, "temp": temp_path, "frame": frame_path, "tag": tag,
             "audio": True, "started_at": time.time(),
         }
     app.logger.info("/record/start did=%s tag=%s (audio on) rtsp=%s", did, tag, rtsp_url)
@@ -1190,6 +1234,14 @@ def record_stop():
         entry = _active_recordings.pop(did, None)
     if not entry:
         return jsonify({"success": False, "error": "No clip is recording for this device"}), 409
+
+    # Best-effort remove the recorder's last-frame jpeg; it is regenerated on
+    # the next recording and a stale one would let a capture serve a photo
+    # from the wrong run.
+    try:
+        os.remove(entry["frame"])
+    except OSError:
+        pass
 
     proc = entry["proc"]
     temp_path = entry["temp"]
